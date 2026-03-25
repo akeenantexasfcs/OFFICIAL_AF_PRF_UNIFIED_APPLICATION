@@ -1016,7 +1016,7 @@ def generate_unified_optimizer_report_docx(
     legend_items = [
         ('\u25cf', ' = one unit', _CLR_PRIMARY_GREEN),
         ('\u25cf\u25cf', ' = two units', RGBColor(0xFF, 0x6B, 0x35)),
-        ('\u25cf\u25cf\u25cf', ' = three units', RGBColor(0xFF, 0x6B, 0x35)),
+        ('\u25cf\u25cf\u25cf', ' = three units, etc.', RGBColor(0xFF, 0x6B, 0x35)),
     ]
     for dots, label, color in legend_items:
         run_dot = legend.add_run(dots)

@@ -1,4 +1,5 @@
 import copy
+import re
 import numpy as np
 import pandas as pd
 import itertools
@@ -283,12 +284,24 @@ def run_joint_optimization(units_data, metric, progress_callback=None, top_k=Non
     n_units = len(units_data)
 
     # 1. Tag original index and sort by TIV (total_coverage)
+    # Helper to safely extract the numeric grid ID for sorting
+    def _get_grid_num(ud):
+        grid_val = str(ud.get('grid_id') or ud.get('grid_label') or '0')
+        match = re.search(r'\d+', grid_val)
+        return int(match.group()) if match else 0
+
+    # 1. Tag original index and sort by strict 4-tier hierarchy
     for i, ud in enumerate(units_data):
         ud['_original_idx'] = i
 
     sorted_units = sorted(
         units_data,
-        key=lambda ud: (-ud.get('total_coverage', 0), ud.get('unit_label', ''))
+        key=lambda ud: (
+            -ud.get('total_coverage', 0),  # 1. Heaviest TIV first (Descending)
+            -ud.get('acres', 0),           # 2. Largest physical footprint first (Descending)
+            -_get_grid_num(ud),            # 3. Highest grid number first (Descending)
+            ud.get('unit_label', '')       # 4. Failproof alphabetical fallback for identical grids
+        )
     )
 
     # 2. Greedy Loop: Base Case (Heaviest Unit)

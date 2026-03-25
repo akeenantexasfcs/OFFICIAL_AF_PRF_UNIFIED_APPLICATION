@@ -856,7 +856,7 @@ def generate_unified_optimizer_report_docx(
     # =========================================================================
     # NEW SECTION: COVERAGE LEVEL OPTIMIZATION RESULTS
     # =========================================================================
-    if coverage_mode != 'none' and coverage_best is not None:
+    if report_stage == 1 and coverage_mode != 'none' and coverage_best is not None:
         doc.add_paragraph()
         _add_heading_paragraph(doc, "Coverage Level Optimization Results", Pt(20), bold=True,
                                color=_CLR_BLACK, space_before=Pt(6))
@@ -1009,24 +1009,29 @@ def generate_unified_optimizer_report_docx(
                 _shade_cell(row_cells[i + 1], _SHADE_GRAY_HEX, '\u2014',
                             font_size=Pt(8))
 
-    # Legend
+    # Legend — dot-based, mirrors Streamlit UI
     legend = doc.add_paragraph()
     legend.paragraph_format.space_before = Pt(4)
 
-    run_g = legend.add_run('\u25cf')
-    run_g.font.color.rgb = _CLR_PRIMARY_GREEN
-    run_g.font.size = Pt(9)
-    legend.add_run(' = covered by one unit     ').font.size = Pt(8)
-
-    run_o = legend.add_run('\u25cf\u25cf')
-    run_o.font.color.rgb = RGBColor(0xFF, 0x6B, 0x35)
-    run_o.font.size = Pt(9)
-    legend.add_run(' = overlap between units     ').font.size = Pt(8)
+    legend_items = [
+        ('\u25cf', ' = one unit', _CLR_PRIMARY_GREEN),
+        ('\u25cf\u25cf', ' = two units', RGBColor(0xFF, 0x6B, 0x35)),
+        ('\u25cf\u25cf\u25cf', ' = three units', RGBColor(0xFF, 0x6B, 0x35)),
+    ]
+    for dots, label, color in legend_items:
+        run_dot = legend.add_run(dots)
+        run_dot.font.color.rgb = color
+        run_dot.font.size = Pt(8)
+        run_lbl = legend.add_run(label + '     ')
+        run_lbl.font.size = Pt(7)
+        run_lbl.font.color.rgb = RGBColor(0x6B, 0x70, 0x80)  # slate/gray
 
     run_gray = legend.add_run('\u2014')
     run_gray.font.color.rgb = RGBColor(0x99, 0x99, 0x99)
-    run_gray.font.size = Pt(9)
-    legend.add_run(' = not covered').font.size = Pt(8)
+    run_gray.font.size = Pt(8)
+    run_nc = legend.add_run(' = not covered')
+    run_nc.font.size = Pt(7)
+    run_nc.font.color.rgb = RGBColor(0x6B, 0x70, 0x80)
 
     # =========================================================================
     # SECTION 6: HISTORICAL PERFORMANCE CHART

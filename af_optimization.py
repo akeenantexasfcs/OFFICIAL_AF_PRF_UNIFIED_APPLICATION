@@ -257,134 +257,15 @@ def _score_independent(yearly_returns, producer_costs, metric):
     return best_idx, float(scores[best_idx])
 
 
-def _optimize_2_units(units_data, metric, progress_callback=None):
-    """Optimized 2-unit joint optimization with vectorized inner loop."""
-    u1, u2 = units_data
-    r1, r2 = u1['yearly_returns'], u2['yearly_returns']
-    a1, a2 = u1['acres'], u2['acres']
-    c1, c2 = u1['producer_costs'], u2['producer_costs']
-    total_acres = a1 + a2
-    n1, n2 = len(r1), len(r2)
-    # Pre-compute weighted returns (avoids repeated multiplication in inner loop)
-    r1_weighted = r1 * (a1 / total_acres)  # (n1, n_years)
-    r2_weighted = r2 * (a2 / total_acres)  # (n2, n_years)
-
-    best_score = -np.inf
-    best_combo = (0, 0)
-    top_combos = []
-
-    for i in range(n1):
-        if progress_callback and i % max(1, n1 // 20) == 0:
-            progress_callback(i / n1)
-        portfolio = r1_weighted[i:i+1, :] + r2_weighted  # (n2, n_years)
-
-        if metric == 'sharpe':
-            means = portfolio.mean(axis=1)
-            stds = portfolio.std(axis=1)
-            scores = np.full(n2, -np.inf)
-            mask = stds > 0
-            scores[mask] = means[mask] / stds[mask]
-        elif metric == 'cvar':
-            scores = np.percentile(portfolio, 5, axis=1)
-        elif metric == 'roi':
-            total_cost = (c1[i] * a1 + c2 * a2) / total_acres
-            means = portfolio.mean(axis=1)
-            scores = np.full(n2, -np.inf)
-            mask = total_cost > 0
-            scores[mask] = (means[mask] + total_cost[mask]) / total_cost[mask]
-        elif metric == 'winrate':
-            scores = (portfolio > 0).mean(axis=1)
-        else:
-            scores = np.zeros(n2)
-
-        best_j = int(np.argmax(scores))
-        if scores[best_j] > best_score:
-            best_score = float(scores[best_j])
-            best_combo = (i, best_j)
-
-        top_j_indices = np.argsort(scores)[-3:]
-        for j in top_j_indices:
-            if np.isfinite(scores[j]):
-                top_combos.append(((i, int(j)), float(scores[j])))
-
-    if progress_callback:
-        progress_callback(1.0)
-
-    top_combos.sort(key=lambda x: x[1], reverse=True)
-    top_combos = top_combos[:50]
-
-    return best_combo, best_score, top_combos
-
-
-def _optimize_3_units(units_data, metric, progress_callback=None):
-    """3-unit joint optimization."""
-    u1, u2, u3 = units_data
-    r1, r2, r3 = u1['yearly_returns'], u2['yearly_returns'], u3['yearly_returns']
-    a1, a2, a3 = u1['acres'], u2['acres'], u3['acres']
-    c1, c2, c3 = u1['producer_costs'], u2['producer_costs'], u3['producer_costs']
-    total_acres = a1 + a2 + a3
-    n1, n2, n3 = len(r1), len(r2), len(r3)
-    # Pre-compute weighted returns
-    r1_weighted = r1 * (a1 / total_acres)
-    r2_weighted = r2 * (a2 / total_acres)
-    r3_weighted = r3 * (a3 / total_acres)
-
-    best_score = -np.inf
-    best_combo = (0, 0, 0)
-    top_combos = []
-    total_iters = n1 * n2
-    current = 0
-
-    for i in range(n1):
-        if progress_callback and i % max(1, n1 // 20) == 0:
-            progress_callback(i / n1)
-        for j in range(n2):
-            current += 1
-
-            portfolio = r1_weighted[i:i+1, :] + r2_weighted[j:j+1, :] + r3_weighted
-
-            if metric == 'sharpe':
-                means = portfolio.mean(axis=1)
-                stds = portfolio.std(axis=1)
-                scores = np.full(n3, -np.inf)
-                mask = stds > 0
-                scores[mask] = means[mask] / stds[mask]
-            elif metric == 'cvar':
-                scores = np.percentile(portfolio, 5, axis=1)
-            elif metric == 'roi':
-                total_cost = (c1[i] * a1 + c2[j] * a2 + c3 * a3) / total_acres
-                means = portfolio.mean(axis=1)
-                scores = np.full(n3, -np.inf)
-                mask = total_cost > 0
-                scores[mask] = (means[mask] + total_cost[mask]) / total_cost[mask]
-            elif metric == 'winrate':
-                scores = (portfolio > 0).mean(axis=1)
-            else:
-                scores = np.zeros(n3)
-
-            best_k = int(np.argmax(scores))
-            if scores[best_k] > best_score:
-                best_score = float(scores[best_k])
-                best_combo = (i, j, best_k)
-
-            top_k = np.argsort(scores)[-2:]
-            for k in top_k:
-                if np.isfinite(scores[k]):
-                    top_combos.append(((i, j, int(k)), float(scores[k])))
-
-    if progress_callback:
-        progress_callback(1.0)
-
-    top_combos.sort(key=lambda x: x[1], reverse=True)
-    top_combos = top_combos[:50]
-
-    return best_combo, best_score, top_combos
-
-
 def run_joint_optimization(units_data, metric, progress_callback=None, top_k=None):
-    """Run joint optimization across multiple units."""
+    """
+    True Linear Greedy Sequential Optimization.
+    Sorts units by financial gravity (TIV/total_coverage), locks the best independent
+    candidate for the heaviest unit, and sequentially optimizes each subsequent unit
+    against the locked portfolio to plug gaps and minimize variance.
+    """
     # Pre-filter candidates if top_k is set
-    index_maps = []  # Per-unit mapping from filtered index -> original index
+    index_maps = []
     if top_k is not None:
         units_data = copy.deepcopy(units_data)
         for i, ud in enumerate(units_data):
@@ -400,95 +281,90 @@ def run_joint_optimization(units_data, metric, progress_callback=None, top_k=Non
         index_maps = [np.arange(len(ud['yearly_returns'])) for ud in units_data]
 
     n_units = len(units_data)
-    if n_units == 2:
-        best_combo, best_score, top_combos = _optimize_2_units(units_data, metric, progress_callback)
-    elif n_units == 3:
-        best_combo, best_score, top_combos = _optimize_3_units(units_data, metric, progress_callback)
-    else:
-        # 4+ units: greedy sequential pairing, sorted by total_coverage
-        # Tag each unit with its original index
-        for i, ud in enumerate(units_data):
-            ud['_original_idx'] = i
 
-        # Sort: highest total_coverage first, then unit_label ascending as tiebreaker
-        sorted_units = sorted(
-            units_data,
-            key=lambda ud: (-ud.get('total_coverage', 0), ud.get('unit_label', ''))
-        )
+    # 1. Tag original index and sort by TIV (total_coverage)
+    for i, ud in enumerate(units_data):
+        ud['_original_idx'] = i
 
-        # Pair the two highest-coverage units first
-        best_combo_01, _, _ = _optimize_2_units(sorted_units[:2], metric)
-        u0, u1 = sorted_units[0], sorted_units[1]
-        merged_returns = (
-            u0['yearly_returns'][best_combo_01[0]:best_combo_01[0]+1, :] * u0['acres'] +
-            u1['yearly_returns'][best_combo_01[1]:best_combo_01[1]+1, :] * u1['acres']
-        ) / (u0['acres'] + u1['acres'])
+    sorted_units = sorted(
+        units_data,
+        key=lambda ud: (-ud.get('total_coverage', 0), ud.get('unit_label', ''))
+    )
 
-        # Track accumulated per-acre cost of the merged portfolio
-        merged_cost = (
-            u0['producer_costs'][best_combo_01[0]] * u0['acres'] +
-            u1['producer_costs'][best_combo_01[1]] * u1['acres']
-        ) / (u0['acres'] + u1['acres'])
+    # 2. Greedy Loop: Base Case (Heaviest Unit)
+    u0 = sorted_units[0]
+    r0 = u0['yearly_returns']
+    c0 = u0['producer_costs']
+    a0 = u0['acres']
+    n0 = len(r0)
 
-        # Map original index -> chosen candidate index
-        result_map = {
-            sorted_units[0]['_original_idx']: best_combo_01[0],
-            sorted_units[1]['_original_idx']: best_combo_01[1],
-        }
+    best_u0_idx, _ = _score_independent(r0, c0, metric)
 
-        for k in range(2, len(sorted_units)):
-            uk = sorted_units[k]
-            merged_unit = {
-                'yearly_returns': merged_returns,
-                'producer_costs': np.array([merged_cost]),
-                'acres': sum(sorted_units[j]['acres'] for j in range(k)),
-            }
-            pair_data = [merged_unit, uk]
-            best_pair, _, _ = _optimize_2_units(pair_data, metric)
-            result_map[uk['_original_idx']] = best_pair[1]
+    # Initialize the locked portfolio with Unit 0's best candidate
+    locked_returns = r0[best_u0_idx:best_u0_idx+1, :] * a0
+    locked_cost = c0[best_u0_idx] * a0
+    locked_acres = a0
 
-            new_merged_acres = merged_unit['acres'] + uk['acres']
-            merged_returns = (
-                merged_returns * merged_unit['acres'] +
-                uk['yearly_returns'][best_pair[1]:best_pair[1]+1, :] * uk['acres']
-            ) / new_merged_acres
-            merged_cost = (
-                merged_cost * merged_unit['acres'] +
-                uk['producer_costs'][best_pair[1]] * uk['acres']
-            ) / new_merged_acres
+    result_map = {u0['_original_idx']: best_u0_idx}
 
+    # 3. Greedy Loop: Sequential Hedge Building
+    for k in range(1, len(sorted_units)):
         if progress_callback:
-            progress_callback(1.0)
+            progress_callback(k / n_units)
 
-        # Reconstruct result in original unit order
-        result_indices = tuple(result_map[i] for i in range(len(units_data)))
+        uk = sorted_units[k]
+        rk = uk['yearly_returns']
+        ck = uk['producer_costs']
+        ak = uk['acres']
+        nk = len(rk)
 
-        # Final portfolio scoring uses original units_data order
-        total_acres = sum(u['acres'] for u in units_data)
-        portfolio = sum(
-            units_data[k]['yearly_returns'][result_indices[k]:result_indices[k]+1, :] * units_data[k]['acres']
-            for k in range(len(units_data))
-        ) / total_acres
-        total_cost = sum(
-            units_data[k]['producer_costs'][result_indices[k]] * units_data[k]['acres']
-            for k in range(len(units_data))
-        ) / total_acres
-        score = _score_portfolio(portfolio.flatten(), metric, total_cost=total_cost)
+        # Broadcast the locked portfolio returns against all 'nk' candidates of current unit
+        new_total_acres = locked_acres + ak
+        portfolio_returns = (locked_returns + rk * ak) / new_total_acres
+        portfolio_costs = (locked_cost + ck * ak) / new_total_acres
 
-        best_combo = result_indices
-        best_score = score
-        top_combos = []
+        # Score this intermediate portfolio
+        if metric == 'sharpe':
+            means = portfolio_returns.mean(axis=1)
+            stds = portfolio_returns.std(axis=1)
+            scores = np.full(nk, -np.inf)
+            mask = stds > 0
+            scores[mask] = means[mask] / stds[mask]
+        elif metric == 'cvar':
+            scores = np.percentile(portfolio_returns, 5, axis=1)
+        elif metric == 'roi':
+            means = portfolio_returns.mean(axis=1)
+            scores = np.full(nk, -np.inf)
+            mask = portfolio_costs > 0
+            scores[mask] = (means[mask] + portfolio_costs[mask]) / portfolio_costs[mask]
+        elif metric == 'winrate':
+            scores = (portfolio_returns > 0).mean(axis=1)
+        else:
+            scores = np.zeros(nk)
+
+        best_uk_idx = int(np.argmax(scores))
+        result_map[uk['_original_idx']] = best_uk_idx
+
+        # Lock the winner into the portfolio matrix for the next unit
+        locked_returns = locked_returns + rk[best_uk_idx:best_uk_idx+1, :] * ak
+        locked_cost = locked_cost + ck[best_uk_idx] * ak
+        locked_acres = new_total_acres
+
+    if progress_callback:
+        progress_callback(1.0)
+
+    # Reconstruct result in original unit order
+    best_combo = tuple(result_map[i] for i in range(len(units_data)))
+
+    # Final portfolio scoring
+    final_portfolio = locked_returns / locked_acres
+    final_cost = locked_cost / locked_acres
+    best_score = _score_portfolio(final_portfolio.flatten(), metric, total_cost=final_cost)
+
+    top_combos = [] # Greedy sequential explicitly abandons N-dimensional alternatives
 
     # Remap filtered indices back to original candidate indices
     best_combo = tuple(int(index_maps[k][best_combo[k]]) for k in range(len(best_combo)))
-
-    # Also remap top_combos if present
-    if top_combos:
-        remapped_top = []
-        for combo_tuple, combo_score in top_combos:
-            remapped = tuple(int(index_maps[k][combo_tuple[k]]) for k in range(min(len(combo_tuple), len(index_maps))))
-            remapped_top.append((remapped, combo_score))
-        top_combos = remapped_top
 
     return best_combo, best_score, top_combos
 

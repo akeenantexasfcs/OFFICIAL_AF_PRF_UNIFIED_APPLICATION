@@ -1122,19 +1122,19 @@ else:
         with search_col1:
             search_mode = st.radio(
                 "Search Mode",
-                options=["Fast", "Thorough"],
-                index=0,  # Default to Fast
+                options=["Standard", "Modified"],
+                index=0,  # Default to Standard
                 horizontal=True,
                 key="search_mode",
                 help=(
-                    "**Fast** narrows each unit to its top candidates by independent score "
-                    "before joint optimization — typically identical results in a fraction of the time. "
-                    "**Thorough** tests every valid candidate combination and guarantees the global optimum, "
-                    "but can take 5-10+ minutes for 4+ units."
+                    "**Standard:** TFC's proprietary application of Greedy Equivalence Search. "
+                    "Evaluates the full combinatorial space sequentially for mathematically perfect global optimums.\n"
+                    "**Modified:** Narrows each unit to its top candidates before joint optimization "
+                    "for faster execution on very large portfolios."
                 ),
             )
         with search_col2:
-            if search_mode == "Fast":
+            if search_mode == "Modified":
                 top_k_value = st.slider(
                     "Pre-Filter Top K per Unit",
                     min_value=100,
@@ -1151,7 +1151,7 @@ else:
             else:
                 top_k_value = None
     else:
-        search_mode = "Fast"
+        search_mode = "Standard"
         top_k_value = None
 
     cov_mode_label = st.radio(
@@ -1693,12 +1693,16 @@ else:
             indep_indices = res.get('indep_indices', [])
         else:
             display_metrics = None
-            best_combo = None
-            units_data = []
-            indep_indices = []
+            best_combo = tuple(
+                res['units'][ud['_result_idx']]['best_idx']
+                for ud in res.get('units_data_for_joint', [])
+            )
+            units_data = res.get('units_data_for_joint', [])
+            indep_indices = res.get('indep_indices', [])
 
         # ── 1. Headline Metrics (Portfolio Results) ──
         st.markdown("### 📊 Portfolio Results")
+        port_metrics = None  # will be set in independent mode
 
         if display_metrics:
             joint_m = display_metrics
@@ -1774,6 +1778,12 @@ else:
                                             _fmt_dollar(port_metrics['producer_cost'])),
                         unsafe_allow_html=True,
                     )
+
+        # Unified Stage 1 metrics for downstream (Stage 2, reporting)
+        if mode == 'joint' and 'joint_metrics' in res:
+            stage1_metrics = res['joint_metrics']
+        else:
+            stage1_metrics = port_metrics
 
         # ── 2. Total Premium + Total Coverage side-by-side ──
         if len(valid_units) >= 1:
@@ -2145,10 +2155,7 @@ else:
         # ══════════════════════════════════════════════════════════════════════
         # Stage 2: HRP Acre Rebalancing
         # ══════════════════════════════════════════════════════════════════════
-        if (res is not None
-                and mode == 'joint'
-                and 'joint_metrics' in res
-                and len(units_data) >= 2):
+        if res is not None and len(units_data) >= 2:
 
             st.markdown("---")
             # 3a — Section header
@@ -2289,7 +2296,7 @@ else:
                                       if st.session_state.get('s2_budget_enabled', False)
                                       else None),
                     'budget_scale_factor': budget_scale_factor,
-                    'original_metrics': res['joint_metrics'],
+                    'original_metrics': stage1_metrics,
                     'rebalanced_metrics': new_metrics,
                 }
 
@@ -2460,7 +2467,7 @@ Export strategy reports and review optimization details.</span>
 </div>
 """, unsafe_allow_html=True)
 
-        if mode == 'joint' and best_combo and units_data:
+        if best_combo and units_data:
             # Report version selector (only if Stage 2 was run)
             report_use_stage2 = False
             if 's2_results' in st.session_state:

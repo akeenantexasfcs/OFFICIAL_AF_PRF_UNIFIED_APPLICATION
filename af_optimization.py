@@ -324,40 +324,58 @@ def run_joint_optimization(units_data, metric, progress_callback=None, top_k=Non
         best_score = -np.inf
         best_i, best_j = 0, 0
 
-        # Vectorized inner loop: for each candidate i of Unit 0,
-        # broadcast against ALL candidates of Unit 1 simultaneously.
-        for i in range(n0):
-            if progress_callback and i % max(1, n0 // 20) == 0:
-                # Progress for Round 1: 0% to 50% of total
-                progress_callback(i / n0 * 0.5)
+        # Chunked pairwise search: process multiple Unit 0 candidates at once
+        # using 3D tensor broadcasting. This reduces Python loop iterations from
+        # n0 (~22,000) to n0/chunk_size (~44), dramatically cutting interpreter overhead.
+        #
+        # Memory per chunk: chunk_size × n1 × n_years × 8 bytes
+        #   500 × 22,000 × 76 × 8 = ~53 MB (well within limits)
+        n_years = r0.shape[1]
+        chunk_size = 500
 
-            # portfolio shape: (n1, n_years)
-            portfolio = (r0[i:i+1, :] * a0 + r1 * a1) / total_acres_01
+        n_chunks = (n0 + chunk_size - 1) // chunk_size  # ceiling division
+        for chunk_idx in range(n_chunks):
+            start = chunk_idx * chunk_size
+            end = min(start + chunk_size, n0)
+            chunk_len = end - start
+
+            if progress_callback and chunk_idx % max(1, n_chunks // 20) == 0:
+                progress_callback(chunk_idx / n_chunks * 0.5)
+
+            # 3D broadcast: (chunk, 1, n_years) * a0 + (1, n1, n_years) * a1
+            # Result shape: (chunk, n1, n_years)
+            portfolio = (r0[start:end, np.newaxis, :] * a0 + r1[np.newaxis, :, :] * a1) / total_acres_01
 
             if metric == 'sharpe':
-                means = portfolio.mean(axis=1)
-                stds = portfolio.std(axis=1)
-                scores = np.full(n1, -np.inf)
+                means = portfolio.mean(axis=2)       # (chunk, n1)
+                stds = portfolio.std(axis=2)         # (chunk, n1)
+                scores = np.full((chunk_len, n1), -np.inf)
                 mask = stds > 0
                 scores[mask] = means[mask] / stds[mask]
             elif metric == 'cvar':
-                scores = np.percentile(portfolio, 5, axis=1)
+                scores = np.percentile(portfolio, 5, axis=2)  # (chunk, n1)
             elif metric == 'roi':
-                total_cost = (c0[i] * a0 + c1 * a1) / total_acres_01
-                means = portfolio.mean(axis=1)
-                scores = np.full(n1, -np.inf)
+                # c0[start:end] shape: (chunk,) → broadcast to (chunk, n1)
+                total_cost = (c0[start:end, np.newaxis] * a0 + c1[np.newaxis, :] * a1) / total_acres_01
+                means = portfolio.mean(axis=2)
+                scores = np.full((chunk_len, n1), -np.inf)
                 mask = total_cost > 0
                 scores[mask] = (means[mask] + total_cost[mask]) / total_cost[mask]
             elif metric == 'winrate':
-                scores = (portfolio > 0).mean(axis=1)
+                scores = (portfolio > 0).mean(axis=2)  # (chunk, n1)
             else:
-                scores = np.zeros(n1)
+                scores = np.zeros((chunk_len, n1))
 
-            local_best_j = int(np.argmax(scores))
-            if scores[local_best_j] > best_score:
-                best_score = float(scores[local_best_j])
-                best_i = i
-                best_j = local_best_j
+            # Find best (i, j) in this chunk
+            chunk_best_flat = int(np.argmax(scores))
+            chunk_best_i_local = chunk_best_flat // n1
+            chunk_best_j = chunk_best_flat % n1
+            chunk_best_score = float(scores[chunk_best_i_local, chunk_best_j])
+
+            if chunk_best_score > best_score:
+                best_score = chunk_best_score
+                best_i = start + chunk_best_i_local
+                best_j = chunk_best_j
 
         # Lock both units
         result_map = {

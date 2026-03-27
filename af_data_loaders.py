@@ -189,7 +189,7 @@ def load_historical_indices(grid_id, growing_season):
     ordered_names = [intervals[c] for c in sorted(intervals.keys())]
     existing_cols = [n for n in ordered_names if n in pivot.columns]
     pivot = pivot[['YEAR'] + existing_cols]
-    pivot = pivot.sort_values('YEAR', ascending=False).reset_index(drop=True)
+    pivot = pivot.sort_values('YEAR', ascending=True).reset_index(drop=True)
 
     return pivot
 
@@ -223,5 +223,10 @@ def load_historical_matrix(grid_id, growing_season):
             vals = hist_df[name].values
             valid = pd.notna(vals)
             matrix[valid, i] = vals[valid].astype(float)
+
+    # Ensure ascending year order (matches PRF convention)
+    sort_order = np.argsort(years)
+    years = years[sort_order]
+    matrix = matrix[sort_order]
 
     return matrix, years

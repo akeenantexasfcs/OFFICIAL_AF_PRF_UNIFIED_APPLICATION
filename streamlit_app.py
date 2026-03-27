@@ -174,7 +174,8 @@ def _enumerate_all_candidates(unit_configs, weight_step, prf_interval_range,
 
 
 def _backtest_and_score(unit_configs, candidates_cache, opt_metric, opt_mode,
-                        start_year, end_year, progress_callback=None, top_k=None):
+                        start_year, end_year, progress_callback=None, top_k=None,
+                        calc_engine='python'):
     """Phase 2: Backtest pre-enumerated candidates and score.
 
     Coverage_level matters here (changes premium rates, trigger, DA).
@@ -399,7 +400,7 @@ def _backtest_and_score(unit_configs, candidates_cache, opt_metric, opt_mode,
 
     if opt_mode == 'joint' and len(units_data_for_joint) >= 2:
         best_combo, best_score_j, top_combos = \
-            run_joint_optimization(units_data_for_joint, opt_metric, progress_callback, top_k=top_k)
+            run_joint_optimization(units_data_for_joint, opt_metric, progress_callback, top_k=top_k, calc_engine=calc_engine)
 
         for k in range(len(units_data_for_joint)):
             ri = units_data_for_joint[k]['_result_idx']
@@ -452,7 +453,7 @@ def _backtest_and_score(unit_configs, candidates_cache, opt_metric, opt_mode,
 
 def _run_optimization_pipeline(unit_configs, opt_metric, opt_mode, weight_step,
                                 prf_interval_range, start_year, end_year,
-                                progress_callback=None, top_k=None):
+                                progress_callback=None, top_k=None, calc_engine='python'):
     """Run the full per-unit enumeration → backtest → score pipeline.
 
     Returns (score, results_dict, units_data_for_joint) where score is the
@@ -474,6 +475,7 @@ def _run_optimization_pipeline(unit_configs, opt_metric, opt_mode, weight_step,
     return _backtest_and_score(
         unit_configs, candidates_cache, opt_metric, opt_mode,
         start_year, end_year, _backtest_progress, top_k=top_k,
+        calc_engine=calc_engine,
     )
 
 
@@ -1150,9 +1152,18 @@ else:
                 )
             else:
                 top_k_value = None
+        st.markdown("### Calculation Engine")
+        calc_engine_label = st.radio(
+            "Select the underlying computation engine:",
+            options=["Python (Standard)", "Numba (JIT Compiled)"],
+            index=0,
+            help="Python uses standard NumPy vectorization. Numba uses Just-In-Time C-compilation to bypass Python's memory limits, computing billions of combinations in seconds."
+        )
+        calc_engine = 'numba' if 'Numba' in calc_engine_label else 'python'
     else:
         search_mode = "Standard"
         top_k_value = None
+        calc_engine = 'python'
 
     cov_mode_label = st.radio(
         "Coverage Level Mode",
@@ -1295,6 +1306,7 @@ else:
                     unit_configs, opt_metric, opt_mode, weight_step,
                     prf_interval_range, start_year, end_year,
                     progress_callback=_none_progress, top_k=top_k_value,
+                    calc_engine=calc_engine,
                 )
                 results['coverage_mode'] = 'none'
                 progress_bar.progress(100, text="Complete!")
@@ -1334,6 +1346,7 @@ else:
                         modified, candidates_cache, opt_metric, opt_mode,
                         start_year, end_year,
                         progress_callback=_uni_progress, top_k=top_k_value,
+                        calc_engine=calc_engine,
                     )
                     cov_comparison.append({
                         'combo': cov,
@@ -1394,6 +1407,7 @@ else:
                             modified, candidates_cache, opt_metric, opt_mode,
                             start_year, end_year,
                             progress_callback=_cat_progress, top_k=top_k_value,
+                            calc_engine=calc_engine,
                         )
                         cov_comparison.append({
                             'combo': (prf_cov, af_cov),
@@ -1454,6 +1468,7 @@ else:
                     score, results_i, _ = _backtest_and_score(
                         unit_configs, candidates_cache, opt_metric, opt_mode,
                         start_year, end_year, top_k=top_k_value,
+                        calc_engine=calc_engine,
                     )
                     best_results = results_i
                     best_combo_cov = ()
@@ -1495,6 +1510,7 @@ else:
                             modified, candidates_cache, opt_metric, opt_mode,
                             start_year, end_year,
                             progress_callback=_cc_progress, top_k=top_k_value,
+                            calc_engine=calc_engine,
                         )
                         cov_comparison.append({
                             'combo': combo,
@@ -1562,6 +1578,7 @@ else:
                                 modified, candidates_cache, opt_metric, opt_mode,
                                 start_year, end_year,
                                 progress_callback=_cc_greedy_progress, top_k=top_k_value,
+                                calc_engine=calc_engine,
                             )
                             cov_comparison.append({
                                 'combo': cov,
@@ -1591,6 +1608,7 @@ else:
                         best_score, best_results, _ = _backtest_and_score(
                             unit_configs, candidates_cache, opt_metric, opt_mode,
                             start_year, end_year, top_k=top_k_value,
+                            calc_engine=calc_engine,
                         )
 
                 best_results['coverage_mode'] = 'per_county_crop'

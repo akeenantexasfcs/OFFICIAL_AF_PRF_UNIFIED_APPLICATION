@@ -189,6 +189,10 @@ def load_historical_indices(grid_id, growing_season):
     ordered_names = [intervals[c] for c in sorted(intervals.keys())]
     existing_cols = [n for n in ordered_names if n in pivot.columns]
     pivot = pivot[['YEAR'] + existing_cols]
+    # Sort ascending to match PRF convention. CAT units call this function
+    # directly (not through load_historical_matrix), so descending order here
+    # causes year-column misalignment in mixed PRF+AF portfolios during
+    # _backtest_and_score() year alignment.
     pivot = pivot.sort_values('YEAR', ascending=True).reset_index(drop=True)
 
     return pivot

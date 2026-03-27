@@ -358,6 +358,32 @@ def _numba_pairwise_cvar(r0, r1, a0, a1):
     return best_scores, best_js
 
 
+@njit(parallel=True, fastmath=True)
+def _numba_pairwise_winrate(r0, r1, a0, a1):
+    N = r0.shape[0]
+    M = r1.shape[0]
+    T = r1.shape[1]
+    total_a = a0 + a1
+    best_scores = np.full(N, -np.inf)
+    best_js = np.zeros(N, dtype=np.int32)
+    for i in prange(N):
+        loc_best = -np.inf
+        loc_j = 0
+        for j in range(M):
+            count = 0
+            for t in range(T):
+                val = (r0[i, t] * a0 + r1[j, t] * a1) / total_a
+                if val > 0.0:
+                    count += 1
+            score = count / T
+            if score > loc_best:
+                loc_best = score
+                loc_j = j
+        best_scores[i] = loc_best
+        best_js[i] = loc_j
+    return best_scores, best_js
+
+
 def run_joint_optimization(units_data, metric, progress_callback=None, top_k=None, calc_engine='python', calc_precision='float64'):
     """
     Pairwise-Exhaustive + Sequential Greedy Optimization.
@@ -442,6 +468,8 @@ def run_joint_optimization(units_data, metric, progress_callback=None, top_k=Non
                 best_scores, best_js = _numba_pairwise_roi(r0_arr, r1_arr, c0_arr, c1_arr, float(a0), float(a1))
             elif metric == 'cvar':
                 best_scores, best_js = _numba_pairwise_cvar(r0_arr, r1_arr, float(a0), float(a1))
+            elif metric == 'winrate':
+                best_scores, best_js = _numba_pairwise_winrate(r0_arr, r1_arr, float(a0), float(a1))
             else:
                 # Fallback to python if metric is unsupported
                 calc_engine = 'python'

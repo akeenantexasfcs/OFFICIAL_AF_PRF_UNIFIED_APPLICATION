@@ -125,9 +125,14 @@ def enumerate_candidates(growing_season, step=5):
 
 
 def backtest_candidates_vectorized(candidates, hist_matrix, cbv, coverage_level,
-                                   productivity, base_rates_arr, subsidy_pct):
+                                   productivity, base_rates_arr, subsidy_pct,
+                                   acres=1.0, insurable_interest=1.0):
     """
-    Vectorized backtest of all candidates.
+    Vectorized backtest of all candidates using the full USDA DST cascade.
+
+    Insurable interest and acres are baked into Policy Protection before
+    computing premium and indemnity, matching the USDA Decision Support Tool
+    dollar-for-dollar.
 
     Returns:
         yearly_returns: (n_candidates, n_years) net return per acre per year
@@ -135,37 +140,46 @@ def backtest_candidates_vectorized(candidates, hist_matrix, cbv, coverage_level,
     """
     # USDA Cascading Rounding Sequence (matches Decision Support Tool exactly)
     # Each step uses np.floor(x + 0.5) to simulate ROUND_HALF_UP across arrays.
+
+    # Step 1: Dollar Amount of Protection
     da_display = _round_half_up(cbv * coverage_level * productivity, 2)
     trigger = 100.0 * coverage_level
 
     weight_matrix = np.array([c[1] for c in candidates])  # (n_cand, 6)
 
-    # Step 1: Policy Protection — rounded from da_display
-    pp_array = np.floor(da_display * weight_matrix + 0.5)  # (n_cand, 6)
+    # Step 2: Policy Protection (total dollars) — DA * II * acres * weight
+    pp_total = np.floor(da_display * insurable_interest * acres * weight_matrix + 0.5)  # (n_cand, 6)
 
-    # Step 2: Premium — rounded from pp_array
-    premium = np.floor(pp_array * base_rates_arr[np.newaxis, :] + 0.5)
+    # Step 3: Total Premium — rounded from pp_total
+    premium = np.floor(pp_total * base_rates_arr[np.newaxis, :] + 0.5)
 
-    # Step 3: Subsidy — rounded from premium
+    # Step 4: Subsidy — rounded from premium
     subsidy = np.floor(premium * subsidy_pct + 0.5)
 
-    # Step 4: Producer Premium (derived, no rounding)
+    # Step 5: Producer Premium (derived, no rounding) — total dollars
     producer = premium - subsidy
-    producer_costs = producer.sum(axis=1)  # (n_cand,)
+    producer_total = producer.sum(axis=1)  # (n_cand,)
 
-    # Step 5: Indemnity — rounded from pp_array
+    # Step 6: Indemnity (total dollars) — rounded from pp_total
     shortfall = np.maximum(0, 1.0 - hist_matrix[np.newaxis, :, :] / trigger)
-    payout = np.floor(shortfall * pp_array[:, np.newaxis, :] + 0.5)
-    yearly_indemnity = payout.sum(axis=2)  # (n_cand, n_years)
-    yearly_returns = yearly_indemnity - producer_costs[:, np.newaxis]
+    payout = np.floor(shortfall * pp_total[:, np.newaxis, :] + 0.5)
+    yearly_indemnity_total = payout.sum(axis=2)  # (n_cand, n_years)
+
+    # Convert back to per-acre for return values (optimizer works in per-acre space)
+    yearly_returns = yearly_indemnity_total / acres - producer_total[:, np.newaxis] / acres
+    producer_costs = producer_total / acres
 
     return yearly_returns, producer_costs
 
 
-def backtest_cat_unit(grid_id, growing_season, cbv, productivity, coverage_level, subsidy_pct):
+def backtest_cat_unit(grid_id, growing_season, cbv, productivity, coverage_level, subsidy_pct,
+                      acres=1.0, insurable_interest=1.0):
     """
     Build backtest data for a CAT unit.
     CAT has a single candidate: the full-season 7th interval at 100% weight.
+
+    Insurable interest and acres are baked into Policy Protection before
+    computing premium and indemnity, matching the USDA Decision Support Tool.
 
     Returns:
         candidates: list with one dummy candidate
@@ -203,26 +217,29 @@ def backtest_cat_unit(grid_id, growing_season, cbv, productivity, coverage_level
     cat_base_rate = float(rate_df.iloc[0]['BASE_RATE']) if not rate_df.empty else 0.0
 
     # USDA Cascading Rounding Sequence (matches Decision Support Tool exactly)
+    # Step 1: Dollar Amount of Protection
     da_display = _round_half_up(cbv * coverage_level * productivity, 2)
     trigger = 100.0 * coverage_level
 
-    # Step 1: Policy Protection — CAT is single interval at 100% weight
-    pp = np.floor(da_display * 1.0 + 0.5)
+    # Step 2: Policy Protection (total dollars) — CAT is single interval at 100% weight
+    pp = np.floor(da_display * insurable_interest * acres * 1.0 + 0.5)
 
-    # Step 2: Premium — rounded from pp
+    # Step 3: Total Premium — rounded from pp
     premium = np.floor(pp * cat_base_rate + 0.5)
 
-    # Step 3: Subsidy — rounded from premium
+    # Step 4: Subsidy — rounded from premium
     subsidy = np.floor(premium * subsidy_pct + 0.5)
 
-    # Step 4: Producer Premium (derived, no rounding)
-    producer_cost = premium - subsidy
+    # Step 5: Producer Premium (derived, no rounding) — total dollars
+    producer_total = premium - subsidy
 
-    # Step 5: Indemnity — rounded from pp
+    # Step 6: Indemnity (total dollars) — rounded from pp
     shortfall = np.maximum(0, 1.0 - cat_indices / trigger)
     payouts = np.floor(shortfall * pp + 0.5)
-    yearly_returns = (payouts - producer_cost).reshape(1, -1)  # (1, n_years)
-    producer_costs = np.array([producer_cost])
+
+    # Convert back to per-acre for return values (optimizer works in per-acre space)
+    yearly_returns = (payouts / acres - producer_total / acres).reshape(1, -1)  # (1, n_years)
+    producer_costs = np.array([producer_total / acres])
 
     candidates = [((0,), np.zeros(6))]
 

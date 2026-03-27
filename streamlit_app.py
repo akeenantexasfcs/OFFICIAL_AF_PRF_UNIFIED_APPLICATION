@@ -238,13 +238,13 @@ def _backtest_and_score(unit_configs, candidates_cache, opt_metric, opt_mode,
                         cbv,
                         cfg['productivity'], cfg['coverage_level'],
                         af_load_subsidy(cfg['coverage_level']),
+                        acres=cfg['acres'],
+                        insurable_interest=cfg['insurable_interest'],
                     )
                     unit_result['is_cat'] = True
                     unit_result['candidates'] = candidates
                     unit_result['n_candidates'] = len(candidates)
                     if len(candidates) > 0 and yearly_returns.size > 0:
-                        yearly_returns *= cfg['insurable_interest']
-                        producer_costs *= cfg['insurable_interest']
                         unit_result['yearly_returns'] = yearly_returns
                         unit_result['producer_costs'] = producer_costs
                         unit_result['years'] = years
@@ -288,10 +288,9 @@ def _backtest_and_score(unit_configs, candidates_cache, opt_metric, opt_mode,
                         candidates, hist_matrix_filtered, cbv,
                         cfg['coverage_level'], cfg['productivity'],
                         base_rates, subsidy_pct,
+                        acres=cfg['acres'],
+                        insurable_interest=cfg['insurable_interest'],
                     )
-
-                    yearly_returns *= cfg['insurable_interest']
-                    producer_costs *= cfg['insurable_interest']
 
                     unit_result['yearly_returns'] = yearly_returns
                     unit_result['producer_costs'] = producer_costs

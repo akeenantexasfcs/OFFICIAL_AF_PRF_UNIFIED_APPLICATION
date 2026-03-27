@@ -1,5 +1,6 @@
 import copy
 import numpy as np
+from numba import njit, prange
 import pandas as pd
 import itertools
 from af_constants import (
@@ -257,7 +258,103 @@ def _score_independent(yearly_returns, producer_costs, metric):
     return best_idx, float(scores[best_idx])
 
 
-def run_joint_optimization(units_data, metric, progress_callback=None, top_k=None):
+@njit(parallel=True, fastmath=True)
+def _numba_pairwise_sharpe(r0, r1, a0, a1):
+    N = r0.shape[0]
+    M = r1.shape[0]
+    T = r0.shape[1]
+    total_a = a0 + a1
+    best_scores = np.full(N, -np.inf)
+    best_js = np.zeros(N, dtype=np.int32)
+    for i in prange(N):
+        loc_best = -np.inf
+        loc_j = 0
+        for j in range(M):
+            sum_r = 0.0
+            sum_sq = 0.0
+            for t in range(T):
+                val = (r0[i, t] * a0 + r1[j, t] * a1) / total_a
+                sum_r += val
+                sum_sq += val * val
+            mean = sum_r / T
+            var = (sum_sq / T) - (mean * mean)
+            if var > 0:
+                score = mean / np.sqrt(var)
+            else:
+                score = -np.inf
+            if score > loc_best:
+                loc_best = score
+                loc_j = j
+        best_scores[i] = loc_best
+        best_js[i] = loc_j
+    return best_scores, best_js
+
+@njit(parallel=True, fastmath=True)
+def _numba_pairwise_roi(r0, r1, c0, c1, a0, a1):
+    N = r0.shape[0]
+    M = r1.shape[0]
+    T = r0.shape[1]
+    total_a = a0 + a1
+    best_scores = np.full(N, -np.inf)
+    best_js = np.zeros(N, dtype=np.int32)
+    for i in prange(N):
+        loc_best = -np.inf
+        loc_j = 0
+        for j in range(M):
+            sum_r = 0.0
+            for t in range(T):
+                sum_r += (r0[i, t] * a0 + r1[j, t] * a1) / total_a
+            mean = sum_r / T
+            cost = (c0[i] * a0 + c1[j] * a1) / total_a
+            if cost > 0:
+                score = (mean + cost) / cost
+            else:
+                score = -np.inf
+            if score > loc_best:
+                loc_best = score
+                loc_j = j
+        best_scores[i] = loc_best
+        best_js[i] = loc_j
+    return best_scores, best_js
+
+@njit(parallel=True, fastmath=True)
+def _numba_pairwise_cvar(r0, r1, a0, a1):
+    N = r0.shape[0]
+    M = r1.shape[0]
+    T = r0.shape[1]
+    total_a = a0 + a1
+    best_scores = np.full(N, -np.inf)
+    best_js = np.zeros(N, dtype=np.int32)
+    for i in prange(N):
+        loc_best = -np.inf
+        loc_j = 0
+        arr = np.zeros(T)
+        for j in range(M):
+            for t in range(T):
+                arr[t] = (r0[i, t] * a0 + r1[j, t] * a1) / total_a
+
+            # Inline percentile calculation for 5th percentile
+            # Sort the tiny array (T elements)
+            sorted_arr = np.sort(arr)
+            k = (T - 1) * 0.05
+            f = int(np.floor(k))
+            c = int(np.ceil(k))
+            if f == c:
+                score = sorted_arr[int(k)]
+            else:
+                d0 = sorted_arr[f] * (c - k)
+                d1 = sorted_arr[c] * (k - f)
+                score = d0 + d1
+
+            if score > loc_best:
+                loc_best = score
+                loc_j = j
+        best_scores[i] = loc_best
+        best_js[i] = loc_j
+    return best_scores, best_js
+
+
+def run_joint_optimization(units_data, metric, progress_callback=None, top_k=None, calc_engine='python'):
     """
     Pairwise-Exhaustive + Sequential Greedy Optimization.
     Round 1: exhaustive pairwise search over the top two units (by TIV) —
@@ -325,95 +422,122 @@ def run_joint_optimization(units_data, metric, progress_callback=None, top_k=Non
         best_score = -np.inf
         best_i, best_j = 0, 0
 
-        if metric in ['sharpe', 'roi']:
-            # Fast Vectorized Linear Math (No 3D Tensor Required)
-            mu0 = r0.mean(axis=1)
-            mu1 = r1.mean(axis=1)
+        if calc_engine == 'numba':
+            # Force arrays into contiguous C-memory blocks
+            r0_arr = np.ascontiguousarray(r0)
+            r1_arr = np.ascontiguousarray(r1)
+            c0_arr = np.ascontiguousarray(c0)
+            c1_arr = np.ascontiguousarray(c1)
 
             if metric == 'sharpe':
-                var0 = r0.var(axis=1)
-                var1 = r1.var(axis=1)
-                r0_c = r0 - mu0[:, None]
-                r1_c = r1 - mu1[:, None]
+                best_scores, best_js = _numba_pairwise_sharpe(r0_arr, r1_arr, float(a0), float(a1))
+            elif metric == 'roi':
+                best_scores, best_js = _numba_pairwise_roi(r0_arr, r1_arr, c0_arr, c1_arr, float(a0), float(a1))
+            elif metric == 'cvar':
+                best_scores, best_js = _numba_pairwise_cvar(r0_arr, r1_arr, float(a0), float(a1))
+            else:
+                # Fallback to python if metric is unsupported
+                calc_engine = 'python'
+
+            if calc_engine == 'numba':
+                best_i = int(np.argmax(best_scores))
+                best_j = int(best_js[best_i])
+
+                # Re-calculate the actual best score accurately for the return payload
+                best_returns = (r0[best_i] * a0 + r1[best_j] * a1) / total_acres_01
+                best_cost = (c0[best_i] * a0 + c1[best_j] * a1) / total_acres_01
+                best_score = _score_portfolio(best_returns, metric, total_cost=best_cost)
+
+        if calc_engine == 'python':
+            if metric in ['sharpe', 'roi']:
+                # Fast Vectorized Linear Math (No 3D Tensor Required)
+                mu0 = r0.mean(axis=1)
+                mu1 = r1.mean(axis=1)
+
+                if metric == 'sharpe':
+                    var0 = r0.var(axis=1)
+                    var1 = r1.var(axis=1)
+                    r0_c = r0 - mu0[:, None]
+                    r1_c = r1 - mu1[:, None]
+                    n_years = r0.shape[1]
+
+                # Chunking to keep the 2D output matrices memory safe (~350MB per chunk)
+                chunk_size = 2000
+                n_chunks = (n0 + chunk_size - 1) // chunk_size
+
+                for chunk_idx in range(n_chunks):
+                    if progress_callback and chunk_idx % max(1, n_chunks // 10) == 0:
+                        progress_callback(chunk_idx / n_chunks * 0.5)
+
+                    start = chunk_idx * chunk_size
+                    end = min(start + chunk_size, n0)
+
+                    means = (mu0[start:end, None] * a0 + mu1[None, :] * a1) / total_acres_01
+
+                    if metric == 'roi':
+                        total_costs = (c0[start:end, None] * a0 + c1[None, :] * a1) / total_acres_01
+                        scores = np.full(means.shape, -np.inf)
+                        mask = total_costs > 0
+                        scores[mask] = (means[mask] + total_costs[mask]) / total_costs[mask]
+                    else:
+                        # Sharpe: Compute covariance using highly-optimized BLAS matrix multiplication
+                        # (chunk, T) @ (T, n1) -> (chunk, n1)
+                        cov_01 = (r0_c[start:end] @ r1_c.T) / n_years
+
+                        vars_comb = (
+                            (a0**2) * var0[start:end, None] +
+                            (a1**2) * var1[None, :] +
+                            2 * a0 * a1 * cov_01
+                        ) / (total_acres_01**2)
+
+                        stds = np.sqrt(np.maximum(vars_comb, 0))
+                        scores = np.full(stds.shape, -np.inf)
+                        mask = stds > 0
+                        scores[mask] = means[mask] / stds[mask]
+
+                    chunk_best_flat = int(np.argmax(scores))
+                    chunk_best_i_local = chunk_best_flat // n1
+                    chunk_best_j = chunk_best_flat % n1
+                    chunk_best_score = float(scores[chunk_best_i_local, chunk_best_j])
+
+                    if chunk_best_score > best_score:
+                        best_score = chunk_best_score
+                        best_i = start + chunk_best_i_local
+                        best_j = chunk_best_j
+
+            else:
+                # For non-linear metrics (CVaR, Winrate), we MUST use the 3D tensor.
+                # Safe memory limit: 25 × 22,000 × 76 × 8 bytes = ~334 MB per chunk
                 n_years = r0.shape[1]
+                chunk_size = 25
+                n_chunks = (n0 + chunk_size - 1) // chunk_size
 
-            # Chunking to keep the 2D output matrices memory safe (~350MB per chunk)
-            chunk_size = 2000
-            n_chunks = (n0 + chunk_size - 1) // chunk_size
+                for chunk_idx in range(n_chunks):
+                    if progress_callback and chunk_idx % max(1, n_chunks // 20) == 0:
+                        progress_callback(chunk_idx / n_chunks * 0.5)
 
-            for chunk_idx in range(n_chunks):
-                if progress_callback and chunk_idx % max(1, n_chunks // 10) == 0:
-                    progress_callback(chunk_idx / n_chunks * 0.5)
+                    start = chunk_idx * chunk_size
+                    end = min(start + chunk_size, n0)
 
-                start = chunk_idx * chunk_size
-                end = min(start + chunk_size, n0)
+                    # 3D broadcast: (chunk, 1, n_years) * a0 + (1, n1, n_years) * a1 -> (chunk, n1, n_years)
+                    portfolio = (r0[start:end, np.newaxis, :] * a0 + r1[np.newaxis, :, :] * a1) / total_acres_01
 
-                means = (mu0[start:end, None] * a0 + mu1[None, :] * a1) / total_acres_01
+                    if metric == 'cvar':
+                        scores = np.percentile(portfolio, 5, axis=2)
+                    elif metric == 'winrate':
+                        scores = (portfolio > 0).mean(axis=2)
+                    else:
+                        scores = np.zeros((end - start, n1))
 
-                if metric == 'roi':
-                    total_costs = (c0[start:end, None] * a0 + c1[None, :] * a1) / total_acres_01
-                    scores = np.full(means.shape, -np.inf)
-                    mask = total_costs > 0
-                    scores[mask] = (means[mask] + total_costs[mask]) / total_costs[mask]
-                else:
-                    # Sharpe: Compute covariance using highly-optimized BLAS matrix multiplication
-                    # (chunk, T) @ (T, n1) -> (chunk, n1)
-                    cov_01 = (r0_c[start:end] @ r1_c.T) / n_years
+                    chunk_best_flat = int(np.argmax(scores))
+                    chunk_best_i_local = chunk_best_flat // n1
+                    chunk_best_j = chunk_best_flat % n1
+                    chunk_best_score = float(scores[chunk_best_i_local, chunk_best_j])
 
-                    vars_comb = (
-                        (a0**2) * var0[start:end, None] +
-                        (a1**2) * var1[None, :] +
-                        2 * a0 * a1 * cov_01
-                    ) / (total_acres_01**2)
-
-                    stds = np.sqrt(np.maximum(vars_comb, 0))
-                    scores = np.full(stds.shape, -np.inf)
-                    mask = stds > 0
-                    scores[mask] = means[mask] / stds[mask]
-
-                chunk_best_flat = int(np.argmax(scores))
-                chunk_best_i_local = chunk_best_flat // n1
-                chunk_best_j = chunk_best_flat % n1
-                chunk_best_score = float(scores[chunk_best_i_local, chunk_best_j])
-
-                if chunk_best_score > best_score:
-                    best_score = chunk_best_score
-                    best_i = start + chunk_best_i_local
-                    best_j = chunk_best_j
-
-        else:
-            # For non-linear metrics (CVaR, Winrate), we MUST use the 3D tensor.
-            # Safe memory limit: 25 × 22,000 × 76 × 8 bytes = ~334 MB per chunk
-            n_years = r0.shape[1]
-            chunk_size = 25
-            n_chunks = (n0 + chunk_size - 1) // chunk_size
-
-            for chunk_idx in range(n_chunks):
-                if progress_callback and chunk_idx % max(1, n_chunks // 20) == 0:
-                    progress_callback(chunk_idx / n_chunks * 0.5)
-
-                start = chunk_idx * chunk_size
-                end = min(start + chunk_size, n0)
-
-                # 3D broadcast: (chunk, 1, n_years) * a0 + (1, n1, n_years) * a1 -> (chunk, n1, n_years)
-                portfolio = (r0[start:end, np.newaxis, :] * a0 + r1[np.newaxis, :, :] * a1) / total_acres_01
-
-                if metric == 'cvar':
-                    scores = np.percentile(portfolio, 5, axis=2)
-                elif metric == 'winrate':
-                    scores = (portfolio > 0).mean(axis=2)
-                else:
-                    scores = np.zeros((end - start, n1))
-
-                chunk_best_flat = int(np.argmax(scores))
-                chunk_best_i_local = chunk_best_flat // n1
-                chunk_best_j = chunk_best_flat % n1
-                chunk_best_score = float(scores[chunk_best_i_local, chunk_best_j])
-
-                if chunk_best_score > best_score:
-                    best_score = chunk_best_score
-                    best_i = start + chunk_best_i_local
-                    best_j = chunk_best_j
+                    if chunk_best_score > best_score:
+                        best_score = chunk_best_score
+                        best_i = start + chunk_best_i_local
+                        best_j = chunk_best_j
 
         # Lock both units
         result_map = {

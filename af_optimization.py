@@ -1,5 +1,4 @@
 import copy
-import re
 import numpy as np
 import pandas as pd
 import itertools
@@ -260,10 +259,10 @@ def _score_independent(yearly_returns, producer_costs, metric):
 
 def run_joint_optimization(units_data, metric, progress_callback=None, top_k=None):
     """
-    True Linear Greedy Sequential Optimization.
-    Sorts units by financial gravity (TIV/total_coverage), locks the best independent
-    candidate for the heaviest unit, and sequentially optimizes each subsequent unit
-    against the locked portfolio to plug gaps and minimize variance.
+    Pairwise-Exhaustive + Sequential Greedy Optimization.
+    Round 1: exhaustive pairwise search over the top two units (by TIV) —
+    every candidate of Unit 0 × every candidate of Unit 1.
+    Rounds 2+: each remaining unit is greedily folded against the locked synthetic.
     """
     # Pre-filter candidates if top_k is set
     index_maps = []
@@ -284,46 +283,104 @@ def run_joint_optimization(units_data, metric, progress_callback=None, top_k=Non
     n_units = len(units_data)
 
     # 1. Tag original index and sort by TIV (total_coverage)
-    # Helper to safely extract the numeric grid ID for sorting
-    def _get_grid_num(ud):
-        grid_val = str(ud.get('grid_id') or ud.get('grid_label') or '0')
-        match = re.search(r'\d+', grid_val)
-        return int(match.group()) if match else 0
-
-    # 1. Tag original index and sort by strict 4-tier hierarchy
     for i, ud in enumerate(units_data):
         ud['_original_idx'] = i
 
     sorted_units = sorted(
         units_data,
         key=lambda ud: (
-            -ud.get('total_coverage', 0),  # 1. Heaviest TIV first (Descending)
-            -ud.get('acres', 0),           # 2. Largest physical footprint first (Descending)
-            -_get_grid_num(ud),            # 3. Highest grid number first (Descending)
-            ud.get('unit_label', '')       # 4. Failproof alphabetical fallback for identical grids
+            -ud.get('total_coverage', 0),    # 1. Highest TIV first
+            -len(ud.get('candidates', [])),  # 2. More candidates = larger feasible set = benefits more from exhaustive
+            ud.get('unit_label', '')         # 3. Alphabetical fallback for determinism
         )
     )
 
-    # 2. Greedy Loop: Base Case (Heaviest Unit)
-    u0 = sorted_units[0]
-    r0 = u0['yearly_returns']
-    c0 = u0['producer_costs']
-    a0 = u0['acres']
-    n0 = len(r0)
+    # 2. Round 1: Exhaustive Pairwise Search of Top Two Units
+    #    This is the core of the algorithm. The two highest-TIV units are searched
+    #    exhaustively — every candidate of Unit 0 × every candidate of Unit 1.
+    #    No approximation, no shortcuts. This is where the money is.
 
-    best_u0_idx, _ = _score_independent(r0, c0, metric)
+    if len(sorted_units) == 1:
+        # Single unit — just pick the best independent candidate
+        u0 = sorted_units[0]
+        best_u0_idx, _ = _score_independent(
+            u0['yearly_returns'], u0['producer_costs'], metric
+        )
+        result_map = {u0['_original_idx']: best_u0_idx}
+        locked_returns = u0['yearly_returns'][best_u0_idx:best_u0_idx+1, :] * u0['acres']
+        locked_cost = u0['producer_costs'][best_u0_idx] * u0['acres']
+        locked_acres = u0['acres']
 
-    # Initialize the locked portfolio with Unit 0's best candidate
-    locked_returns = r0[best_u0_idx:best_u0_idx+1, :] * a0
-    locked_cost = c0[best_u0_idx] * a0
-    locked_acres = a0
+    else:
+        # Two or more units — exhaustive pairwise for the top two
+        u0 = sorted_units[0]
+        u1 = sorted_units[1]
+        r0, r1 = u0['yearly_returns'], u1['yearly_returns']
+        c0, c1 = u0['producer_costs'], u1['producer_costs']
+        a0, a1 = u0['acres'], u1['acres']
+        n0, n1 = len(r0), len(r1)
+        total_acres_01 = a0 + a1
 
-    result_map = {u0['_original_idx']: best_u0_idx}
+        best_score = -np.inf
+        best_i, best_j = 0, 0
 
-    # 3. Greedy Loop: Sequential Hedge Building
-    for k in range(1, len(sorted_units)):
+        # Vectorized inner loop: for each candidate i of Unit 0,
+        # broadcast against ALL candidates of Unit 1 simultaneously.
+        for i in range(n0):
+            if progress_callback and i % max(1, n0 // 20) == 0:
+                # Progress for Round 1: 0% to 50% of total
+                progress_callback(i / n0 * 0.5)
+
+            # portfolio shape: (n1, n_years)
+            portfolio = (r0[i:i+1, :] * a0 + r1 * a1) / total_acres_01
+
+            if metric == 'sharpe':
+                means = portfolio.mean(axis=1)
+                stds = portfolio.std(axis=1)
+                scores = np.full(n1, -np.inf)
+                mask = stds > 0
+                scores[mask] = means[mask] / stds[mask]
+            elif metric == 'cvar':
+                scores = np.percentile(portfolio, 5, axis=1)
+            elif metric == 'roi':
+                total_cost = (c0[i] * a0 + c1 * a1) / total_acres_01
+                means = portfolio.mean(axis=1)
+                scores = np.full(n1, -np.inf)
+                mask = total_cost > 0
+                scores[mask] = (means[mask] + total_cost[mask]) / total_cost[mask]
+            elif metric == 'winrate':
+                scores = (portfolio > 0).mean(axis=1)
+            else:
+                scores = np.zeros(n1)
+
+            local_best_j = int(np.argmax(scores))
+            if scores[local_best_j] > best_score:
+                best_score = float(scores[local_best_j])
+                best_i = i
+                best_j = local_best_j
+
+        # Lock both units
+        result_map = {
+            u0['_original_idx']: best_i,
+            u1['_original_idx']: best_j,
+        }
+
+        # Build the locked synthetic from the Round 1 winner
+        locked_returns = (
+            r0[best_i:best_i+1, :] * a0 +
+            r1[best_j:best_j+1, :] * a1
+        )
+        locked_cost = c0[best_i] * a0 + c1[best_j] * a1
+        locked_acres = total_acres_01
+
+    # 3. Rounds 2+: Sequential Folding
+    #    Each remaining unit is scored against the locked synthetic.
+    #    Only one evaluation per candidate — computationally trivial.
+    start_k = 2 if len(sorted_units) >= 2 else 1
+    for k in range(start_k, len(sorted_units)):
         if progress_callback:
-            progress_callback(k / n_units)
+            # Progress for Rounds 2+: 50% to 100% of total
+            progress_callback(0.5 + (k - start_k + 1) / max(1, len(sorted_units) - start_k) * 0.5)
 
         uk = sorted_units[k]
         rk = uk['yearly_returns']
@@ -331,12 +388,10 @@ def run_joint_optimization(units_data, metric, progress_callback=None, top_k=Non
         ak = uk['acres']
         nk = len(rk)
 
-        # Broadcast the locked portfolio returns against all 'nk' candidates of current unit
         new_total_acres = locked_acres + ak
         portfolio_returns = (locked_returns + rk * ak) / new_total_acres
         portfolio_costs = (locked_cost + ck * ak) / new_total_acres
 
-        # Score this intermediate portfolio
         if metric == 'sharpe':
             means = portfolio_returns.mean(axis=1)
             stds = portfolio_returns.std(axis=1)
@@ -358,7 +413,6 @@ def run_joint_optimization(units_data, metric, progress_callback=None, top_k=Non
         best_uk_idx = int(np.argmax(scores))
         result_map[uk['_original_idx']] = best_uk_idx
 
-        # Lock the winner into the portfolio matrix for the next unit
         locked_returns = locked_returns + rk[best_uk_idx:best_uk_idx+1, :] * ak
         locked_cost = locked_cost + ck[best_uk_idx] * ak
         locked_acres = new_total_acres

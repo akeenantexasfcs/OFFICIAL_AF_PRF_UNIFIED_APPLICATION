@@ -61,43 +61,33 @@ def compute_interval_row(cbv, coverage_level, productivity_factor,
                          insurable_interest, acres, interval_weight,
                          base_rate, subsidy_pct, actual_index=None):
     # ================================================================
-    # USDA/AgForce Rounding Convention (verified against GS-10 Grid 25318):
+    # Standard USDA RMA Rainfall Index Calculation Cascade
     #
-    #   1. DA_full  = CBV * coverage * productivity  (full precision)
-    #   2. DA_display = round_half_up(DA_full, 2)    (for ALL subsequent calcs)
-    #   3. PP_raw   = DA_display * interest * acres * weight  (full precision)
-    #   4. PP_display = round_half_up(PP_raw, 0)     (for DISPLAY only)
-    #   5. per_acre_prem = DA_display * weight * BASE_RATE  (full precision)
-    #   6. per_acre_sub  = per_acre_prem * subsidy          (full precision)
-    #   7. Total Premium = round_half_up(per_acre_prem * acres, 0)
-    #   8. Total Subsidy = round_half_up(per_acre_sub * acres, 0)
-    #   9. Producer = TP - Subsidy  (derived)
-    #  10. Indemnity = round_half_up((1 - index/trigger) * PP_from_da_full, 0)
+    # Each step uses the ROUNDED output of the previous step.
+    # This matches the official USDA Decision Support Tool exactly.
     #
-    # Key insights:
-    #   - da_full (unrounded) feeds the protection value used for indemnity
-    #   - da_display (rounded to 2dp) feeds premium calculations and PP display
-    #   - This matches the optimizer engine (backtest_candidates_vectorized)
-    #   - Subsidy is computed from per-acre precision, NOT from round(TP) * subsidy
-    #   - All rounding uses USDA half-up convention, NOT Python banker's rounding
-    #   - Indemnity shortfall uses Decimal arithmetic to avoid IEEE 754 errors
+    #   1. DA  = round(CBV * coverage * productivity, 2)
+    #   2. PP  = round(DA * interest * acres * weight, 0)
+    #   3. TP  = round(PP * base_rate, 0)
+    #   4. PS  = round(TP * subsidy_pct, 0)
+    #   5. Producer Premium = TP - PS  (derived, no rounding)
+    #   6. Indemnity = round((1 - index/trigger) * PP, 0)
     # ================================================================
-    da_full = dollar_amount_of_protection(cbv, coverage_level, productivity_factor)
-    da_display = _round_half_up(da_full, 2)
 
-    # PP display uses da_display (rounded)
+    # Step 1: Dollar Amount of Protection
+    da_display = _round_half_up(cbv * coverage_level * productivity_factor, 2)
+
+    # Step 2: Policy Protection (rounded, used for ALL downstream calcs)
     pp = _round_half_up(da_display * insurable_interest * acres * interval_weight, 0)
 
-    # PP for indemnity uses da_full (unrounded) — matches optimizer vector math
-    pp_for_indemnity = da_full * insurable_interest * acres * interval_weight
+    # Step 3: Total Premium (from rounded PP)
+    tp = _round_half_up(pp * base_rate, 0)
 
-    # Premium and subsidy (uses rounded DA, computed per-acre first)
-    per_acre_prem = da_display * insurable_interest * interval_weight * base_rate
-    per_acre_sub = per_acre_prem * subsidy_pct
+    # Step 4: Premium Subsidy (from rounded TP)
+    ps = _round_half_up(tp * subsidy_pct, 0)
 
-    tp = _round_half_up(per_acre_prem * acres, 0)
-    ps = _round_half_up(per_acre_sub * acres, 0)
-    prod = tp - ps  # Derived — not independently rounded
+    # Step 5: Producer Premium (derived)
+    prod = tp - ps
 
     result = {
         'dollar_amount': da_display,
@@ -105,13 +95,11 @@ def compute_interval_row(cbv, coverage_level, productivity_factor,
         'total_premium': tp,
         'premium_subsidy': ps,
         'producer_premium': prod,
-        'per_acre_premium': per_acre_prem,   # full precision, for totals
-        'per_acre_subsidy': per_acre_sub,     # full precision, for totals
     }
 
+    # Step 6: Indemnity (uses rounded PP)
     if actual_index is not None:
-        # Indemnity uses PP from da_full (unrounded) — matches optimizer engine
-        result['indemnity'] = indemnity(actual_index, coverage_level, pp_for_indemnity)
+        result['indemnity'] = indemnity(actual_index, coverage_level, pp)
     else:
         result['indemnity'] = None
 

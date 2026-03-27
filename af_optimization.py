@@ -98,7 +98,9 @@ def enumerate_candidates(growing_season, step=5):
         if any(combo[i+1] - combo[i] == 1 for i in range(len(combo)-1)):
             continue
         for ws in generate_weight_sets(max_w, min_w, 3, step):
-            for perm in set(itertools.permutations(ws)):
+            # Flatten any nested numpy arrays into standard hashable Python floats
+            ws_clean = tuple(float(x) for x in np.ravel(ws))
+            for perm in set(itertools.permutations(ws_clean)):
                 w6 = np.zeros(6)
                 for idx, c in enumerate(combo):
                     w6[c] = perm[idx] / 100.0
@@ -111,7 +113,9 @@ def enumerate_candidates(growing_season, step=5):
             if combo[1] - combo[0] == 1:
                 continue
             for ws in generate_weight_sets(max_w, min_w, 2, step):
-                for perm in set(itertools.permutations(ws)):
+                # Flatten any nested numpy arrays into standard hashable Python floats
+                ws_clean = tuple(float(x) for x in np.ravel(ws))
+                for perm in set(itertools.permutations(ws_clean)):
                     w6 = np.zeros(6)
                     for idx, c in enumerate(combo):
                         w6[c] = perm[idx] / 100.0

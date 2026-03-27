@@ -43,6 +43,7 @@ from af_data_loaders import (
     load_county_base_value as af_load_cbv,
     load_subsidy_percent as af_load_subsidy,
     load_base_rates_array as af_load_base_rates,
+    load_premium_rates as af_load_premium_rates,
     load_historical_matrix as af_load_hist_matrix,
     load_historical_indices as af_load_hist_indices,
 )
@@ -55,7 +56,7 @@ from af_constants import (
     compute_shared_intervals, compute_next_eligible_season,
     AF_INTERVAL_MATRIX,
 )
-from af_calculations import _round_half_up, indemnity
+from af_calculations import _round_half_up, indemnity, compute_interval_row
 from af_optimization import (
     enumerate_candidates as af_enumerate_candidates,
     backtest_candidates_vectorized as af_backtest_candidates,
@@ -2620,34 +2621,56 @@ Export strategy reports and review optimization details.</span>
                             'hist_matrix': prf_matrix,
                             'full_years': prf_years,
                             'interval_labels': INTERVAL_ORDER_11,
-                            'da_full': ud.get('cbv', 0) * ud['coverage_level'] * ud['productivity'],
-                            'trigger': 100.0 * ud['coverage_level'],
+                            'cbv': ud.get('cbv', 0),
+                            'coverage_level': ud['coverage_level'],
+                            'productivity': ud['productivity'],
+                            'insurable_interest': ud.get('insurable_interest', 1.0),
                             'producer_cost': ud['producer_costs'][best_combo[k]],
                             'acres': ud['acres'],
                         })
                     elif ud.get('is_cat'):
-                        # AF CAT unit
+                        # AF CAT unit — load CAT base rate and subsidy
                         hist_df = af_load_hist_indices(ud['grid_id'], ud['growing_season'])
                         cat_iv = get_cat_interval(ud['growing_season'])
                         cat_name = list(cat_iv.values())[0] if cat_iv else None
                         cat_years = hist_df['YEAR'].values if not hist_df.empty else np.array([])
                         cat_vals = hist_df[cat_name].values.astype(float) if (not hist_df.empty and cat_name in hist_df.columns) else np.array([])
+                        # Load CAT base rate (same query as backtest_cat_unit)
+                        _cat_session = _get_session()
+                        _cat_cov = ud['coverage_level']
+                        _cat_rate_df = _cat_session.sql(f"""
+                            SELECT BASE_RATE
+                            FROM AF_PREMIUM_RATES
+                            WHERE GRID_ID = {ud['grid_id']}
+                              AND GROWING_SEASON = {ud['growing_season']}
+                              AND COVERAGE_LEVEL_PERCENT = {_cat_cov}
+                              AND COVERAGE_TYPE = 'CAT'
+                            LIMIT 1
+                        """).to_pandas()
+                        cat_base_rate = float(_cat_rate_df.iloc[0]['BASE_RATE']) if not _cat_rate_df.empty else 0.0
+                        cat_subsidy_pct = af_load_subsidy(ud['coverage_level'])
                         audit_unit_data.append({
                             'is_cat': True,
                             'is_prf': False,
                             'cat_name': cat_name,
                             'cat_years': cat_years,
                             'cat_vals': cat_vals,
-                            'da_full': ud['cbv'] * ud['coverage_level'] * ud['productivity'],
-                            'trigger': 100.0 * ud['coverage_level'],
-                            'producer_cost': ud['producer_costs'][best_combo[k]],
+                            'cbv': ud['cbv'],
+                            'coverage_level': ud['coverage_level'],
+                            'productivity': ud['productivity'],
+                            'insurable_interest': ud.get('insurable_interest', 1.0),
                             'acres': ud['acres'],
+                            'cat_base_rate': cat_base_rate,
+                            'subsidy_pct': cat_subsidy_pct,
+                            'producer_cost': ud['producer_costs'][best_combo[k]],
                         })
                     else:
-                        # AF Buy-Up unit
+                        # AF Buy-Up unit — load per-interval rates and subsidy
                         hist_matrix_full, full_years = af_load_hist_matrix(ud['grid_id'], ud['growing_season'])
                         intervals_k = get_buyup_intervals(ud['growing_season'])
                         codes_k = sorted(intervals_k.keys())
+                        rates_dict = af_load_premium_rates(ud['grid_id'], ud['growing_season'], ud['coverage_level'])
+                        buyup_subsidy_pct = af_load_subsidy(ud['coverage_level'])
                         audit_unit_data.append({
                             'is_cat': False,
                             'is_prf': False,
@@ -2656,13 +2679,17 @@ Export strategy reports and review optimization details.</span>
                             'full_years': full_years,
                             'intervals_k': intervals_k,
                             'codes_k': codes_k,
-                            'da_full': ud['cbv'] * ud['coverage_level'] * ud['productivity'],
-                            'trigger': 100.0 * ud['coverage_level'],
-                            'producer_cost': ud['producer_costs'][best_combo[k]],
+                            'cbv': ud['cbv'],
+                            'coverage_level': ud['coverage_level'],
+                            'productivity': ud['productivity'],
+                            'insurable_interest': ud.get('insurable_interest', 1.0),
                             'acres': ud['acres'],
+                            'rates_dict': rates_dict,
+                            'subsidy_pct': buyup_subsidy_pct,
+                            'producer_cost': ud['producer_costs'][best_combo[k]],
                         })
 
-                # Build year-by-year audit rows
+                # Build year-by-year audit rows using USDA DST cascading rounding
                 audit_rows = []
                 plot_years_list = list(units_data[0]['years'])
 
@@ -2673,59 +2700,87 @@ Export strategy reports and review optimization details.</span>
 
                     for k in range(len(units_data)):
                         aud = audit_unit_data[k]
-                        unit_indemnity = 0.0
+                        unit_indemnity_total = 0.0  # total dollars (not per-acre)
                         unit_interval_details = []
+                        acres = aud['acres']
 
                         if aud['is_cat']:
+                            # AF CAT — use compute_interval_row with weight=1.0
                             yr_pos = np.where(aud['cat_years'] == year)[0]
                             if len(yr_pos) > 0 and yr_pos[0] < len(aud['cat_vals']):
                                 idx_val = float(aud['cat_vals'][yr_pos[0]])
                                 if pd.notna(idx_val):
-                                    protection_raw = aud['da_full'] * 1.0
-                                    payout_i = indemnity(idx_val, aud['trigger'] / 100.0, protection_raw)
-                                    unit_indemnity = payout_i
+                                    result = compute_interval_row(
+                                        aud['cbv'], aud['coverage_level'], aud['productivity'],
+                                        aud['insurable_interest'], acres, 1.0,
+                                        aud['cat_base_rate'], aud['subsidy_pct'],
+                                        actual_index=idx_val,
+                                    )
+                                    unit_indemnity_total = result['indemnity'] or 0.0
                                     unit_interval_details.append(f"{aud['cat_name']}={idx_val:.1f}")
                         elif aud.get('is_prf'):
+                            # PRF — rounded pattern (no compute_interval_row equivalent yet)
                             yr_pos = np.where(aud['full_years'] == year)[0]
                             if len(yr_pos) > 0:
                                 yr_row = aud['hist_matrix'][yr_pos[0]]
+                                da_display = _round_half_up(
+                                    aud['cbv'] * aud['coverage_level'] * aud['productivity'], 2
+                                )
+                                trigger = 100.0 * aud['coverage_level']
                                 for i in range(11):
-                                    if aud['weight_arr'][i] > 0.005:
+                                    w = aud['weight_arr'][i]
+                                    if w > 0.005:
                                         idx_val = yr_row[i]
-                                        protection_raw = aud['da_full'] * aud['weight_arr'][i]
-                                        payout_i = indemnity(idx_val, aud['trigger'] / 100.0, protection_raw)
-                                        unit_indemnity += payout_i
+                                        pp = _round_half_up(
+                                            da_display * aud['insurable_interest'] * acres * w, 0
+                                        )
+                                        if idx_val < trigger:
+                                            shortfall = 1.0 - idx_val / trigger
+                                            payout_i = _round_half_up(shortfall * pp, 0)
+                                        else:
+                                            payout_i = 0.0
+                                        unit_indemnity_total += payout_i
                                         unit_interval_details.append(
                                             f"{INTERVAL_ORDER_11[i]}={idx_val:.1f}"
                                         )
                         else:
+                            # AF Buy-Up — use compute_interval_row per active interval
                             yr_pos = np.where(aud['full_years'] == year)[0]
                             if len(yr_pos) > 0:
                                 yr_row = aud['hist_matrix'][yr_pos[0]]
                                 for i in range(6):
-                                    if aud['weight_arr'][i] > 0:
+                                    w = aud['weight_arr'][i]
+                                    if w > 0:
                                         idx_val = yr_row[i]
-                                        protection_raw = aud['da_full'] * aud['weight_arr'][i]
-                                        payout_i = indemnity(idx_val, aud['trigger'] / 100.0, protection_raw)
-                                        unit_indemnity += payout_i
+                                        code = aud['codes_k'][i]
+                                        rate_info = aud['rates_dict'].get(code, {'base_rate': 0.0})
+                                        result = compute_interval_row(
+                                            aud['cbv'], aud['coverage_level'], aud['productivity'],
+                                            aud['insurable_interest'], acres, w,
+                                            rate_info['base_rate'], aud['subsidy_pct'],
+                                            actual_index=idx_val,
+                                        )
+                                        unit_indemnity_total += result['indemnity'] or 0.0
                                         unit_interval_details.append(
-                                            f"{aud['intervals_k'][aud['codes_k'][i]]}={idx_val:.1f}"
+                                            f"{aud['intervals_k'][code]}={idx_val:.1f}"
                                         )
 
-                        unit_cost = aud['producer_cost']
-                        unit_net = unit_indemnity - unit_cost
+                        # Premium from optimizer (already correctly computed by refactored backtest)
+                        unit_cost_per_ac = aud['producer_cost']
+                        unit_premium_total = unit_cost_per_ac * acres
+                        unit_indem_per_ac = unit_indemnity_total / acres if acres > 0 else 0.0
 
                         row[f'U{k+1} Indices'] = ', '.join(unit_interval_details) if unit_interval_details else '—'
-                        row[f'U{k+1} Indemnity/ac'] = f"${unit_indemnity:,.2f}"
-                        row[f'U{k+1} Premium/ac'] = f"${unit_cost:,.2f}"
-                        row[f'U{k+1} Net/ac'] = f"${unit_net:,.2f}"
+                        row[f'U{k+1} Indemnity/ac'] = f"${unit_indem_per_ac:,.2f}"
+                        row[f'U{k+1} Premium/ac'] = f"${unit_cost_per_ac:,.2f}"
+                        row[f'U{k+1} Net/ac'] = f"${unit_indem_per_ac - unit_cost_per_ac:,.2f}"
 
-                        portfolio_indemnity += unit_indemnity * aud['acres']
-                        portfolio_premium += unit_cost * aud['acres']
+                        portfolio_indemnity += unit_indemnity_total
+                        portfolio_premium += unit_premium_total
 
                     total_ac_audit = sum(aud_u['acres'] for aud_u in audit_unit_data)
-                    port_indem_ac = portfolio_indemnity / total_ac_audit
-                    port_prem_ac = portfolio_premium / total_ac_audit
+                    port_indem_ac = portfolio_indemnity / total_ac_audit if total_ac_audit > 0 else 0.0
+                    port_prem_ac = portfolio_premium / total_ac_audit if total_ac_audit > 0 else 0.0
                     port_net_ac = port_indem_ac - port_prem_ac
 
                     row['Portfolio Indemnity/ac'] = f"${port_indem_ac:,.2f}"

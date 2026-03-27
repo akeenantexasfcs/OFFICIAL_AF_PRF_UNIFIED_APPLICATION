@@ -354,7 +354,7 @@ def _numba_pairwise_cvar(r0, r1, a0, a1):
     return best_scores, best_js
 
 
-def run_joint_optimization(units_data, metric, progress_callback=None, top_k=None, calc_engine='python'):
+def run_joint_optimization(units_data, metric, progress_callback=None, top_k=None, calc_engine='python', calc_precision='float64'):
     """
     Pairwise-Exhaustive + Sequential Greedy Optimization.
     Round 1: exhaustive pairwise search over the top two units (by TIV) —
@@ -423,11 +423,14 @@ def run_joint_optimization(units_data, metric, progress_callback=None, top_k=Non
         best_i, best_j = 0, 0
 
         if calc_engine == 'numba':
-            # Force arrays into contiguous C-memory blocks
-            r0_arr = np.ascontiguousarray(r0)
-            r1_arr = np.ascontiguousarray(r1)
-            c0_arr = np.ascontiguousarray(c0)
-            c1_arr = np.ascontiguousarray(c1)
+            # Determine target dtype
+            numba_dtype = np.float32 if calc_precision == 'float32' else np.float64
+
+            # Force arrays into contiguous C-memory blocks with the chosen precision
+            r0_arr = np.ascontiguousarray(r0, dtype=numba_dtype)
+            r1_arr = np.ascontiguousarray(r1, dtype=numba_dtype)
+            c0_arr = np.ascontiguousarray(c0, dtype=numba_dtype)
+            c1_arr = np.ascontiguousarray(c1, dtype=numba_dtype)
 
             if metric == 'sharpe':
                 best_scores, best_js = _numba_pairwise_sharpe(r0_arr, r1_arr, float(a0), float(a1))

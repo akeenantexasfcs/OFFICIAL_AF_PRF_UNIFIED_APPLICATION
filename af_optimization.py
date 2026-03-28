@@ -357,27 +357,21 @@ def _numba_pairwise_cvar(r0, r1, a0, a1):
     total_a = a0 + a1
     best_scores = np.full(N, -np.inf)
     best_js = np.zeros(N, dtype=np.int32)
+    k_low = int(np.floor((T - 1) * 0.05))
+    k_high = k_low + 1
+    frac = (T - 1) * 0.05 - k_low
     for i in prange(N):
         loc_best = -np.inf
         loc_j = 0
-        arr = np.zeros(T)
+        arr = np.empty(T)
         for j in range(M):
             for t in range(T):
                 arr[t] = (r0[i, t] * a0 + r1[j, t] * a1) / total_a
-
-            # Inline percentile calculation for 5th percentile
-            # Sort the tiny array (T elements)
-            sorted_arr = np.sort(arr)
-            k = (T - 1) * 0.05
-            f = int(np.floor(k))
-            c = int(np.ceil(k))
-            if f == c:
-                score = sorted_arr[int(k)]
+            arr.sort()
+            if k_high < T:
+                score = arr[k_low] * (1.0 - frac) + arr[k_high] * frac
             else:
-                d0 = sorted_arr[f] * (c - k)
-                d1 = sorted_arr[c] * (k - f)
-                score = d0 + d1
-
+                score = arr[k_low]
             if score > loc_best:
                 loc_best = score
                 loc_j = j

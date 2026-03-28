@@ -1073,13 +1073,14 @@ else:
     with ctrl_col1:
         opt_metric_label = st.radio(
             "Optimization Metric",
-            options=["Risk-Adjusted (Sharpe)", "Tail Risk (CVaR 5%)",
+            options=["Risk-Adjusted (Sharpe)", "Downside Risk (Sortino)", "Tail Risk (CVaR 5%)",
                      "Max Return %", "Win Rate"],
             horizontal=True,
             key="opt_metric",
         )
         metric_map = {
             "Risk-Adjusted (Sharpe)": "sharpe",
+            "Downside Risk (Sortino)": "sortino",
             "Tail Risk (CVaR 5%)": "cvar",
             "Max Return %": "roi",
             "Win Rate": "winrate",
@@ -1301,7 +1302,7 @@ else:
             progress_bar = st.progress(0, text="Preparing optimization...")
 
             metric_display_names = {
-                'sharpe': 'Sharpe', 'cvar': 'CVaR (5th pctl)',
+                'sharpe': 'Sharpe', 'sortino': 'Sortino', 'cvar': 'CVaR (5th pctl)',
                 'roi': 'Return %', 'winrate': 'Win Rate',
             }
 

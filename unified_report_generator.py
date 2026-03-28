@@ -42,6 +42,7 @@ _HEX_ROSE = '#9D5F58'
 
 METRIC_DISPLAY_NAMES = {
     'sharpe': 'Risk-Adjusted (Sharpe)',
+    'sortino': 'Downside Risk (Sortino)',
     'cvar': 'Tail Risk (CVaR 5%)',
     'roi': 'Max Return %',
     'winrate': 'Win Rate',

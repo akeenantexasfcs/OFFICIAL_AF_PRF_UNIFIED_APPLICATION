@@ -463,7 +463,7 @@ def _numba_pairwise_winrate(r0, r1, a0, a1):
     return best_scores, best_js
 
 
-def run_joint_optimization(units_data, metric, progress_callback=None, top_k=None, calc_engine='python', calc_precision='float64'):
+def run_joint_optimization(units_data, metric, progress_callback=None, top_k=None, calc_engine='python', calc_precision='float64', manual_sort_order=None):
     """
     Pairwise-Exhaustive + Sequential Greedy Optimization.
     Round 1: exhaustive pairwise search over the top two units (by TIV) —
@@ -492,14 +492,16 @@ def run_joint_optimization(units_data, metric, progress_callback=None, top_k=Non
     for i, ud in enumerate(units_data):
         ud['_original_idx'] = i
 
-    sorted_units = sorted(
-        units_data,
-        key=lambda ud: (
-            -ud.get('total_coverage', 0),    # 1. Highest TIV first
-            -len(ud.get('candidates', [])),  # 2. More candidates = larger feasible set = benefits more from exhaustive
-            ud.get('unit_label', '')         # 3. Alphabetical fallback for determinism
+    if manual_sort_order is not None:
+        sorted_units = [units_data[i] for i in manual_sort_order]
+    else:
+        sorted_units = sorted(
+            units_data,
+            key=lambda ud: (
+                -ud.get('total_coverage', 0),    # 1. Highest TIV first
+                ud.get('unit_label', '')         # 2. Alphabetical fallback for determinism
+            )
         )
-    )
 
     # 2. Round 1: Exhaustive Pairwise Search of Top Two Units
     #    This is the core of the algorithm. The two highest-TIV units are searched

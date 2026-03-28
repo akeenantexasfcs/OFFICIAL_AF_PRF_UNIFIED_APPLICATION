@@ -176,7 +176,8 @@ def _enumerate_all_candidates(unit_configs, weight_step, prf_interval_range,
 
 def _backtest_and_score(unit_configs, candidates_cache, opt_metric, opt_mode,
                         start_year, end_year, progress_callback=None, top_k=None,
-                        calc_engine='python', calc_precision='float64'):
+                        calc_engine='python', calc_precision='float64',
+                        manual_sort_order=None):
     """Phase 2: Backtest pre-enumerated candidates and score.
 
     Coverage_level matters here (changes premium rates, trigger, DA).
@@ -400,7 +401,7 @@ def _backtest_and_score(unit_configs, candidates_cache, opt_metric, opt_mode,
 
     if opt_mode == 'joint' and len(units_data_for_joint) >= 2:
         best_combo, best_score_j, top_combos = \
-            run_joint_optimization(units_data_for_joint, opt_metric, progress_callback, top_k=top_k, calc_engine=calc_engine, calc_precision=calc_precision)
+            run_joint_optimization(units_data_for_joint, opt_metric, progress_callback, top_k=top_k, calc_engine=calc_engine, calc_precision=calc_precision, manual_sort_order=manual_sort_order)
 
         for k in range(len(units_data_for_joint)):
             ri = units_data_for_joint[k]['_result_idx']
@@ -454,7 +455,7 @@ def _backtest_and_score(unit_configs, candidates_cache, opt_metric, opt_mode,
 def _run_optimization_pipeline(unit_configs, opt_metric, opt_mode, weight_step,
                                 prf_interval_range, start_year, end_year,
                                 progress_callback=None, top_k=None, calc_engine='python',
-                                calc_precision='float64'):
+                                calc_precision='float64', manual_sort_order=None):
     """Run the full per-unit enumeration → backtest → score pipeline.
 
     Returns (score, results_dict, units_data_for_joint) where score is the
@@ -477,6 +478,7 @@ def _run_optimization_pipeline(unit_configs, opt_metric, opt_mode, weight_step,
         unit_configs, candidates_cache, opt_metric, opt_mode,
         start_year, end_year, _backtest_progress, top_k=top_k,
         calc_engine=calc_engine, calc_precision=calc_precision,
+        manual_sort_order=manual_sort_order,
     )
 
 
@@ -1170,11 +1172,41 @@ else:
             help="64-bit is the standard for exact financial accounting. 32-bit halves memory and doubles CPU throughput, but may introduce micro-cent rounding variances in massive portfolios."
         )
         calc_precision = 'float32' if '32-bit' in precision_label else 'float64'
+
+        # Manual sort override — only in Joint mode
+        manual_sort_order = None
+        with st.expander("\U0001f9ea Experimental: Manual Greedy Sort Order"):
+            override_sort = st.toggle("Override automatic sort order", value=False, key="override_sort")
+            if override_sort:
+                st.caption("Positions 1\u20132 = exhaustive pairwise search. Positions 3+ = greedy fold order.")
+                unit_labels = []
+                for uid in sorted(unit_configs.keys()):
+                    cfg = unit_configs[uid]
+                    unit_labels.append(cfg.get('unit_label', f"Unit {uid}"))
+                n_units = len(unit_labels)
+                positions = {}
+                for idx, label in enumerate(unit_labels):
+                    positions[idx] = st.number_input(
+                        f"{label}",
+                        min_value=1,
+                        max_value=n_units,
+                        value=idx + 1,
+                        step=1,
+                        key=f"sort_pos_{idx}",
+                    )
+                pos_values = list(positions.values())
+                if len(set(pos_values)) != len(pos_values):
+                    st.error("Duplicate positions detected. Each unit must have a unique position.")
+                else:
+                    # Convert position assignments to 0-indexed order
+                    sorted_indices = sorted(positions.keys(), key=lambda k: positions[k])
+                    manual_sort_order = sorted_indices
     else:
         search_mode = "Standard"
         top_k_value = None
         calc_engine = 'python'
         calc_precision = 'float64'
+        manual_sort_order = None
 
     cov_mode_label = st.radio(
         "Coverage Level Mode",
@@ -1291,6 +1323,12 @@ else:
                             f"**GS-{next_gs} ({next_label})** — see Appendix for details."
                         )
 
+        # Check for duplicate manual sort positions
+        if manual_sort_order is not None and opt_mode == 'joint':
+            # manual_sort_order is already validated in UI; this is a safety net
+            if len(set(manual_sort_order)) != len(manual_sort_order):
+                errors.append("Duplicate positions in manual sort order. Each unit must have a unique position.")
+
         if errors:
             for e in errors:
                 st.error(e)
@@ -1318,6 +1356,7 @@ else:
                     prf_interval_range, start_year, end_year,
                     progress_callback=_none_progress, top_k=top_k_value,
                     calc_engine=calc_engine, calc_precision=calc_precision,
+                    manual_sort_order=manual_sort_order,
                 )
                 results['coverage_mode'] = 'none'
                 progress_bar.progress(100, text="Complete!")
@@ -1358,6 +1397,7 @@ else:
                         start_year, end_year,
                         progress_callback=_uni_progress, top_k=top_k_value,
                         calc_engine=calc_engine, calc_precision=calc_precision,
+                        manual_sort_order=manual_sort_order,
                     )
                     cov_comparison.append({
                         'combo': cov,
@@ -1419,6 +1459,7 @@ else:
                             start_year, end_year,
                             progress_callback=_cat_progress, top_k=top_k_value,
                             calc_engine=calc_engine, calc_precision=calc_precision,
+                            manual_sort_order=manual_sort_order,
                         )
                         cov_comparison.append({
                             'combo': (prf_cov, af_cov),
@@ -1480,6 +1521,7 @@ else:
                         unit_configs, candidates_cache, opt_metric, opt_mode,
                         start_year, end_year, top_k=top_k_value,
                         calc_engine=calc_engine, calc_precision=calc_precision,
+                        manual_sort_order=manual_sort_order,
                     )
                     best_results = results_i
                     best_combo_cov = ()
@@ -1522,6 +1564,7 @@ else:
                             start_year, end_year,
                             progress_callback=_cc_progress, top_k=top_k_value,
                             calc_engine=calc_engine, calc_precision=calc_precision,
+                            manual_sort_order=manual_sort_order,
                         )
                         cov_comparison.append({
                             'combo': combo,
@@ -1590,6 +1633,7 @@ else:
                                 start_year, end_year,
                                 progress_callback=_cc_greedy_progress, top_k=top_k_value,
                                 calc_engine=calc_engine, calc_precision=calc_precision,
+                                manual_sort_order=manual_sort_order,
                             )
                             cov_comparison.append({
                                 'combo': cov,
@@ -1620,6 +1664,7 @@ else:
                             unit_configs, candidates_cache, opt_metric, opt_mode,
                             start_year, end_year, top_k=top_k_value,
                             calc_engine=calc_engine, calc_precision=calc_precision,
+                            manual_sort_order=manual_sort_order,
                         )
 
                 best_results['coverage_mode'] = 'per_county_crop'

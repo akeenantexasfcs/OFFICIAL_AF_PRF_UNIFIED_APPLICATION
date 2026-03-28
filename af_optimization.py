@@ -290,7 +290,7 @@ def _score_independent(yearly_returns, producer_costs, metric):
     return best_idx, float(scores[best_idx])
 
 
-@njit(parallel=True, fastmath=True, cache=True)
+@njit(parallel=True, fastmath=True)
 def _numba_pairwise_sharpe(r0, r1, a0, a1):
     N = r0.shape[0]
     M = r1.shape[0]
@@ -321,7 +321,7 @@ def _numba_pairwise_sharpe(r0, r1, a0, a1):
         best_js[i] = loc_j
     return best_scores, best_js
 
-@njit(parallel=True, fastmath=True, cache=True)
+@njit(parallel=True, fastmath=True)
 def _numba_pairwise_roi(r0, r1, c0, c1, a0, a1):
     N = r0.shape[0]
     M = r1.shape[0]
@@ -349,7 +349,7 @@ def _numba_pairwise_roi(r0, r1, c0, c1, a0, a1):
         best_js[i] = loc_j
     return best_scores, best_js
 
-@njit(parallel=True, fastmath=True, cache=True)
+@njit(parallel=True, fastmath=True)
 def _numba_pairwise_cvar(r0, r1, a0, a1):
     N = r0.shape[0]
     M = r1.shape[0]
@@ -386,7 +386,7 @@ def _numba_pairwise_cvar(r0, r1, a0, a1):
     return best_scores, best_js
 
 
-@njit(parallel=True, fastmath=True, cache=True)
+@njit(parallel=True, fastmath=True)
 def _numba_pairwise_winrate(r0, r1, a0, a1):
     N = r0.shape[0]
     M = r1.shape[0]

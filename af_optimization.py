@@ -36,6 +36,13 @@ def prefilter_top_k(yearly_returns, producer_costs, metric, k=500):
         scores = np.full(n, -np.inf)
         mask = stds > 0
         scores[mask] = means[mask] / stds[mask]
+    elif metric == 'sortino':
+        means = yearly_returns.mean(axis=1)
+        down_sq = np.where(yearly_returns < 0, yearly_returns ** 2, 0.0).mean(axis=1)
+        down_std = np.sqrt(down_sq)
+        scores = np.full(n, -np.inf)
+        mask = down_std > 0
+        scores[mask] = means[mask] / down_std[mask]
     elif metric == 'cvar':
         scores = np.percentile(yearly_returns, 5, axis=1)
     elif metric == 'roi':
@@ -253,6 +260,13 @@ def _score_portfolio(portfolio_returns, metric, total_cost=None):
         if std == 0:
             return -np.inf
         return float(np.mean(portfolio_returns) / std)
+    elif metric == 'sortino':
+        mean = np.mean(portfolio_returns)
+        downside = portfolio_returns[portfolio_returns < 0]
+        if len(downside) == 0:
+            return np.inf if mean > 0 else 0.0
+        down_std = np.sqrt(np.mean(downside ** 2))
+        return float(mean / down_std)
     elif metric == 'cvar':
         return float(np.percentile(portfolio_returns, 5))
     elif metric == 'roi':
@@ -275,6 +289,13 @@ def _score_independent(yearly_returns, producer_costs, metric):
         scores = np.full(n, -np.inf)
         mask = stds > 0
         scores[mask] = means[mask] / stds[mask]
+    elif metric == 'sortino':
+        means = yr.mean(axis=1)
+        down_sq = np.where(yr < 0, yr ** 2, 0.0).mean(axis=1)
+        down_std = np.sqrt(down_sq)
+        scores = np.full(n, -np.inf)
+        mask = down_std > 0
+        scores[mask] = means[mask] / down_std[mask]
     elif metric == 'cvar':
         scores = np.percentile(yr, 5, axis=1)
     elif metric == 'roi':
@@ -320,6 +341,42 @@ def _numba_pairwise_sharpe(r0, r1, a0, a1):
         best_scores[i] = loc_best
         best_js[i] = loc_j
     return best_scores, best_js
+
+
+@njit(parallel=True, fastmath=True)
+def _numba_pairwise_sortino(r0, r1, a0, a1):
+    N = r0.shape[0]
+    M = r1.shape[0]
+    T = r0.shape[1]
+    total_a = a0 + a1
+    best_scores = np.full(N, -np.inf)
+    best_js = np.zeros(N, dtype=np.int32)
+    for i in prange(N):
+        loc_best = -np.inf
+        loc_j = 0
+        for j in range(M):
+            sum_r = 0.0
+            sum_down_sq = 0.0
+            for t in range(T):
+                val = (r0[i, t] * a0 + r1[j, t] * a1) / total_a
+                sum_r += val
+                if val < 0:
+                    sum_down_sq += val * val
+            mean = sum_r / T
+            if sum_down_sq == 0:
+                if mean > 0:
+                    score = np.inf
+                else:
+                    score = 0.0
+            else:
+                score = mean / np.sqrt(sum_down_sq / T)
+            if score > loc_best:
+                loc_best = score
+                loc_j = j
+        best_scores[i] = loc_best
+        best_js[i] = loc_j
+    return best_scores, best_js
+
 
 @njit(parallel=True, fastmath=True)
 def _numba_pairwise_roi(r0, r1, c0, c1, a0, a1):
@@ -486,6 +543,8 @@ def run_joint_optimization(units_data, metric, progress_callback=None, top_k=Non
 
             if metric == 'sharpe':
                 best_scores, best_js = _numba_pairwise_sharpe(r0_arr, r1_arr, float(a0), float(a1))
+            elif metric == 'sortino':
+                best_scores, best_js = _numba_pairwise_sortino(r0_arr, r1_arr, float(a0), float(a1))
             elif metric == 'roi':
                 best_scores, best_js = _numba_pairwise_roi(r0_arr, r1_arr, c0_arr, c1_arr, float(a0), float(a1))
             elif metric == 'cvar':
@@ -579,7 +638,14 @@ def run_joint_optimization(units_data, metric, progress_callback=None, top_k=Non
                     # 3D broadcast: (chunk, 1, n_years) * a0 + (1, n1, n_years) * a1 -> (chunk, n1, n_years)
                     portfolio = (r0[start:end, np.newaxis, :] * a0 + r1[np.newaxis, :, :] * a1) / total_acres_01
 
-                    if metric == 'cvar':
+                    if metric == 'sortino':
+                        means = portfolio.mean(axis=2)
+                        down_sq = np.where(portfolio < 0, portfolio ** 2, 0.0).mean(axis=2)
+                        down_std = np.sqrt(down_sq)
+                        scores = np.full(means.shape, -np.inf)
+                        mask = down_std > 0
+                        scores[mask] = means[mask] / down_std[mask]
+                    elif metric == 'cvar':
                         scores = np.percentile(portfolio, 5, axis=2)
                     elif metric == 'winrate':
                         scores = (portfolio > 0).mean(axis=2)
@@ -635,6 +701,13 @@ def run_joint_optimization(units_data, metric, progress_callback=None, top_k=Non
             scores = np.full(nk, -np.inf)
             mask = stds > 0
             scores[mask] = means[mask] / stds[mask]
+        elif metric == 'sortino':
+            means = portfolio_returns.mean(axis=1)
+            down_sq = np.where(portfolio_returns < 0, portfolio_returns ** 2, 0.0).mean(axis=1)
+            down_std = np.sqrt(down_sq)
+            scores = np.full(nk, -np.inf)
+            mask = down_std > 0
+            scores[mask] = means[mask] / down_std[mask]
         elif metric == 'cvar':
             scores = np.percentile(portfolio_returns, 5, axis=1)
         elif metric == 'roi':
@@ -714,6 +787,7 @@ def _warmup_numba():
     _dummy_r = np.zeros((2, 2), dtype=np.float64)
     _dummy_c = np.zeros(2, dtype=np.float64)
     _numba_pairwise_sharpe(_dummy_r, _dummy_r, 1.0, 1.0)
+    _numba_pairwise_sortino(_dummy_r, _dummy_r, 1.0, 1.0)
     _numba_pairwise_roi(_dummy_r, _dummy_r, _dummy_c, _dummy_c, 1.0, 1.0)
     _numba_pairwise_cvar(_dummy_r, _dummy_r, 1.0, 1.0)
     _numba_pairwise_winrate(_dummy_r, _dummy_r, 1.0, 1.0)

@@ -191,24 +191,32 @@ def backtest_prf_candidates_vectorized(candidates, grid_id,
     n_cand = len(candidates)
     weight_matrix = np.array([c[1] for c in candidates])  # (n_cand, 11)
 
-    # Protection per interval per candidate
-    protection_raw = da_full * weight_matrix  # (n_cand, 11)
+    # USDA Cascading Rounding Sequence (matches Decision Support Tool exactly)
+    # Each step uses np.floor(x + 0.5) to simulate ROUND_HALF_UP across arrays.
 
-    # Premium calculation
-    premium = da_display * weight_matrix * premium_rates_array  # (n_cand, 11)
-    subsidy = premium * subsidy_pct
+    # Step 2: Policy Protection (total dollars) — DA * II * acres * weight
+    # Note: insurable_interest is applied after in Step 4, but for PRF the
+    # protection per interval uses da_display directly
+    pp_total = np.floor(da_display * weight_matrix + 0.5)  # (n_cand, 11) per-acre protection
+
+    # Step 3: Total Premium — rounded from pp_total
+    premium = np.floor(pp_total * premium_rates_array[np.newaxis, :] + 0.5)
+
+    # Step 4: Subsidy — rounded from premium
+    subsidy = np.floor(premium * subsidy_pct + 0.5)
+
+    # Step 5: Producer Premium (derived, no rounding)
     producer = premium - subsidy
     producer_costs = producer.sum(axis=1)  # (n_cand,)
 
-    # Payout per year per interval per candidate
-    # deficit: max(0, 1 - index/trigger)
-    deficit = np.maximum(0, 1.0 - index_matrix / trigger)  # (n_years, 11)
-    payout = deficit[np.newaxis, :, :] * protection_raw[:, np.newaxis, :]  # (n_cand, n_years, 11)
+    # Step 6: Indemnity — rounded from pp_total
+    shortfall = np.maximum(0, 1.0 - index_matrix / trigger)  # (n_years, 11)
+    payout = np.floor(shortfall[np.newaxis, :, :] * pp_total[:, np.newaxis, :] + 0.5)
     yearly_indemnity = payout.sum(axis=2)  # (n_cand, n_years)
 
     yearly_returns = yearly_indemnity - producer_costs[:, np.newaxis]
 
-    # 4. Apply insurable interest
+    # Step 7: Apply insurable interest
     yearly_returns *= insurable_interest
     producer_costs *= insurable_interest
 

@@ -290,7 +290,7 @@ def _score_independent(yearly_returns, producer_costs, metric):
     return best_idx, float(scores[best_idx])
 
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def _numba_pairwise_sharpe(r0, r1, a0, a1):
     N = r0.shape[0]
     M = r1.shape[0]
@@ -321,7 +321,7 @@ def _numba_pairwise_sharpe(r0, r1, a0, a1):
         best_js[i] = loc_j
     return best_scores, best_js
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def _numba_pairwise_roi(r0, r1, c0, c1, a0, a1):
     N = r0.shape[0]
     M = r1.shape[0]
@@ -349,7 +349,7 @@ def _numba_pairwise_roi(r0, r1, c0, c1, a0, a1):
         best_js[i] = loc_j
     return best_scores, best_js
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def _numba_pairwise_cvar(r0, r1, a0, a1):
     N = r0.shape[0]
     M = r1.shape[0]
@@ -386,7 +386,7 @@ def _numba_pairwise_cvar(r0, r1, a0, a1):
     return best_scores, best_js
 
 
-@njit(parallel=True, fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def _numba_pairwise_winrate(r0, r1, a0, a1):
     N = r0.shape[0]
     M = r1.shape[0]
@@ -713,3 +713,15 @@ def generate_insight_text(joint_combo, indep_indices, units_data):
         return ("The joint optimizer " + "; ".join(differences) +
                 " to reduce portfolio correlation and improve risk-adjusted returns.")
     return "The joint and independent optimizations converged on the same allocation."
+
+
+def _warmup_numba():
+    """Pre-compile Numba kernels at import time so JIT cost never hits the user."""
+    _dummy_r = np.zeros((2, 2), dtype=np.float64)
+    _dummy_c = np.zeros(2, dtype=np.float64)
+    _numba_pairwise_sharpe(_dummy_r, _dummy_r, 1.0, 1.0)
+    _numba_pairwise_roi(_dummy_r, _dummy_r, _dummy_c, _dummy_c, 1.0, 1.0)
+    _numba_pairwise_cvar(_dummy_r, _dummy_r, 1.0, 1.0)
+    _numba_pairwise_winrate(_dummy_r, _dummy_r, 1.0, 1.0)
+
+_warmup_numba()

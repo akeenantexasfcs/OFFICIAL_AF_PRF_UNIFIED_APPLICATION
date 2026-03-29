@@ -2663,7 +2663,7 @@ Export strategy reports and review optimization details.</span>
 
                     cov_label = "CAT (65%)" if ud.get('is_cat') else f"{int(ud['coverage_level']*100)}%"
                     config_parts.append(
-                        f"**{ud['unit_label']}** — Grid {ud.get('grid_label', ud.get('grid_id', ''))}, "
+                        f"**U{k+1}: {ud['unit_label']}** — Grid {ud.get('grid_label', ud.get('grid_id', ''))}, "
                         f"{season_str}, "
                         f"Cov {cov_label}, "
                         f"PF {int(ud['productivity']*100)}%, "

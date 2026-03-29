@@ -499,7 +499,8 @@ def run_joint_optimization(units_data, metric, progress_callback=None, top_k=Non
             units_data,
             key=lambda ud: (
                 -ud.get('total_coverage', 0),    # 1. Highest TIV first
-                ud.get('unit_label', '')         # 2. Alphabetical fallback for determinism
+                -ud.get('acres', 0),             # 2. Acres descending (tiebreaker)
+                ud.get('unit_label', '')          # 3. Alphabetical fallback for determinism
             )
         )
 

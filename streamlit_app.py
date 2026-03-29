@@ -2482,6 +2482,69 @@ else:
                         <p>Win Rate: <strong>{new_m['winrate']*100:.1f}%</strong> {_s2_delta(new_m['winrate'], orig_m['winrate'], pct=True)}</p>
                     </div>""", unsafe_allow_html=True)
 
+                # 2b. Before/After Historical Performance Chart
+                st.markdown("#### Before / After Historical Performance")
+
+                # Compute Stage 1 (original) portfolio returns
+                s2_n_units = len(units_data)
+                s2_total_acres_orig = sum(s2r['original_acres'])
+                s2_total_acres_rebal = sum(s2r['rebalanced_acres'])
+
+                s2_orig_ret = np.zeros(len(units_data[0]['yearly_returns'][best_combo[0]]))
+                s2_rebal_ret = np.zeros_like(s2_orig_ret)
+
+                for s2k in range(s2_n_units):
+                    s2_unit_ret = units_data[s2k]['yearly_returns'][best_combo[s2k]]
+                    s2_orig_ret += s2_unit_ret * s2r['original_acres'][s2k]
+                    s2_rebal_ret += s2_unit_ret * s2r['rebalanced_acres'][s2k]
+
+                if s2_total_acres_orig > 0:
+                    s2_orig_ret_per_ac = s2_orig_ret / s2_total_acres_orig
+                else:
+                    s2_orig_ret_per_ac = s2_orig_ret
+
+                if s2_total_acres_rebal > 0:
+                    s2_rebal_ret_per_ac = s2_rebal_ret / s2_total_acres_rebal
+                else:
+                    s2_rebal_ret_per_ac = s2_rebal_ret
+
+                s2_years = units_data[0]['years']
+
+                s2_fig = go.Figure()
+                s2_fig.add_trace(go.Bar(
+                    x=s2_years,
+                    y=s2_orig_ret_per_ac,
+                    name='Stage 1 (Original)',
+                    marker_color=FC_SLATE,
+                    opacity=0.7,
+                ))
+                s2_fig.add_trace(go.Bar(
+                    x=s2_years,
+                    y=s2_rebal_ret_per_ac,
+                    name='Stage 2 (Rebalanced)',
+                    marker_color=FC_GREEN,
+                    opacity=0.85,
+                ))
+                s2_fig.update_layout(
+                    title="Net Return per Acre — Stage 1 vs Stage 2",
+                    xaxis_title="Year",
+                    yaxis_title="Net Return per Acre ($)",
+                    template="plotly_white",
+                    height=400,
+                    barmode='group',
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.02,
+                        xanchor="right",
+                        x=1,
+                    ),
+                )
+                s2_fig.add_hline(y=0, line_dash="dash", line_color="red",
+                                  annotation_text="Break-even",
+                                  annotation_position="top left")
+                st.plotly_chart(s2_fig, use_container_width=True)
+
                 # 3. Budget Info callout
                 if s2r['budget_enabled'] and abs(s2r['budget_scale_factor'] - 1.0) > 1e-6:
                     orig_premium = sum(

@@ -93,6 +93,24 @@ def _compute_all_metrics(returns, cost):
             'producer_cost': cost, 'std_return': std}
 
 
+def _compute_tiebreaker_sharpe(results_i, opt_mode):
+    """Extract or compute portfolio Sharpe from optimization results for tiebreaking."""
+    if opt_mode == 'joint' and 'joint_metrics' in results_i:
+        return results_i['joint_metrics'].get('sharpe', -np.inf)
+    valid = [u for u in results_i.get('units', []) if 'metrics' in u and 'error' not in u]
+    if not valid:
+        return -np.inf
+    total_ac = sum(u['config']['acres'] for u in valid)
+    if total_ac <= 0:
+        return -np.inf
+    ret = np.zeros_like(valid[0]['yearly_returns'][valid[0]['best_idx']])
+    for u in valid:
+        ret += u['yearly_returns'][u['best_idx']] * u['config']['acres']
+    ret /= total_ac
+    std = np.std(ret)
+    return float(np.mean(ret) / std) if std > 0 else -np.inf
+
+
 def _extract_county(grid_label):
     """Extract county from grid label like '10020 (Dimmit - TX)' → 'Dimmit'
     or '25318 (Lincoln - NE)' → 'Lincoln'. Returns 'Unknown' if parsing fails."""
@@ -1373,6 +1391,7 @@ else:
             elif coverage_mode == 'uniform':
                 # ── Uniform: test all 5 levels ──
                 best_score = -np.inf
+                best_tiebreaker = -np.inf
                 best_results = None
                 cov_comparison = []
 
@@ -1410,8 +1429,10 @@ else:
                         'label': f"{int(cov*100)}%",
                         'score': score,
                     })
-                    if score > best_score:
+                    tiebreaker = _compute_tiebreaker_sharpe(results_i, opt_mode)
+                    if score > best_score or (score == best_score and tiebreaker > best_tiebreaker):
                         best_score = score
+                        best_tiebreaker = tiebreaker
                         best_results = results_i
                         best_cov = cov
 
@@ -1427,6 +1448,7 @@ else:
             elif coverage_mode == 'per_category':
                 # ── Per Category: 5×5 = 25 combos ──
                 best_score = -np.inf
+                best_tiebreaker = -np.inf
                 best_results = None
                 cov_comparison = []
                 total_combos = len(COVERAGE_LEVELS_TO_TEST) ** 2
@@ -1472,8 +1494,10 @@ else:
                             'label': f"PRF {int(prf_cov*100)}% / AF {int(af_cov*100)}%",
                             'score': score,
                         })
-                        if score > best_score:
+                        tiebreaker = _compute_tiebreaker_sharpe(results_i, opt_mode)
+                        if score > best_score or (score == best_score and tiebreaker > best_tiebreaker):
                             best_score = score
+                            best_tiebreaker = tiebreaker
                             best_results = results_i
                             best_combo_cov = (prf_cov, af_cov)
 
@@ -1514,6 +1538,7 @@ else:
                     default_covs[gk] = unit_configs[first_uid]['coverage_level']
 
                 best_score = -np.inf
+                best_tiebreaker = -np.inf
                 best_results = None
                 cov_comparison = []
 
@@ -1577,8 +1602,10 @@ else:
                             'label': label,
                             'score': score,
                         })
-                        if score > best_score:
+                        tiebreaker = _compute_tiebreaker_sharpe(results_i, opt_mode)
+                        if score > best_score or (score == best_score and tiebreaker > best_tiebreaker):
                             best_score = score
+                            best_tiebreaker = tiebreaker
                             best_results = results_i
                             best_combo_cov = combo
 
@@ -1601,6 +1628,7 @@ else:
                     best_level_results = None
                     for g_idx, gk in enumerate(sorted_group_keys):
                         best_level_score = -np.inf
+                        best_level_tiebreaker = -np.inf
                         best_level = default_covs[gk]
                         county, crop = gk
                         for cov in COVERAGE_LEVELS_TO_TEST:
@@ -1648,8 +1676,10 @@ else:
                                 'group': f"{crop} {county}",
                                 'is_locked': False,
                             })
-                            if score > best_level_score:
+                            tiebreaker = _compute_tiebreaker_sharpe(results_i, opt_mode)
+                            if score > best_level_score or (score == best_level_score and tiebreaker > best_level_tiebreaker):
                                 best_level_score = score
+                                best_level_tiebreaker = tiebreaker
                                 best_level = cov
                                 best_level_results = results_i
 

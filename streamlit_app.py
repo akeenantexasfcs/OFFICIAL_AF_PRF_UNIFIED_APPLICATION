@@ -2931,15 +2931,10 @@ Export strategy reports and review optimization details.</span>
 
                 # Compute joint portfolio for summary stats
                 total_ac_s = sum(ud['acres'] for ud in units_data)
-                joint_portfolio_audit = sum(
+                joint_net_audit = sum(
                     units_data[kk]['yearly_returns'][best_combo[kk]:best_combo[kk]+1, :] * units_data[kk]['acres']
                     for kk in range(len(units_data))
                 ).flatten() / total_ac_s
-                joint_cost_audit = sum(
-                    units_data[kk]['producer_costs'][best_combo[kk]] * units_data[kk]['acres']
-                    for kk in range(len(units_data))
-                ) / total_ac_s
-                joint_net_audit = joint_portfolio_audit - joint_cost_audit
 
                 st.markdown(f"""
                 <div style="display:flex; gap:16px; margin-bottom:12px; font-size:0.88em;">

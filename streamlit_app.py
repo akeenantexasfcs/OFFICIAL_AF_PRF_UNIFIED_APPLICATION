@@ -1184,7 +1184,7 @@ else:
         calc_engine_label = st.radio(
             "Select the underlying computation engine:",
             options=["Python (Standard)", "Numba (JIT Compiled)"],
-            index=0,
+            index=1,
             help="Python uses standard NumPy vectorization. Numba uses Just-In-Time C-compilation to bypass Python's memory limits, computing billions of combinations in seconds."
         )
         calc_engine = 'numba' if 'Numba' in calc_engine_label else 'python'
@@ -2295,7 +2295,7 @@ else:
                                     value=50000, step=1000, key="s2_budget_amount")
             with s2_b3:
                 if st.session_state.get('s2_budget_enabled', False):
-                    st.checkbox("Auto-fill (scale up if under)", key="s2_budget_autofill")
+                    st.checkbox("Auto-fill (scale up if under)", value=True, key="s2_budget_autofill")
 
             # 3d — Run button
             s2_any_active = (st.session_state.get('s2_enable_hrp', False)
@@ -2663,7 +2663,7 @@ Export strategy reports and review optimization details.</span>
 
                     cov_label = "CAT (65%)" if ud.get('is_cat') else f"{int(ud['coverage_level']*100)}%"
                     config_parts.append(
-                        f"**U{k+1}: {ud['unit_label']}** — Grid {ud.get('grid_label', ud.get('grid_id', ''))}, "
+                        f"**U{k+1}: {ud['unit_label']}** — "
                         f"{season_str}, "
                         f"Cov {cov_label}, "
                         f"PF {int(ud['productivity']*100)}%, "

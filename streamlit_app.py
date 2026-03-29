@@ -82,7 +82,13 @@ def _compute_all_metrics(returns, cost):
     winrate = float(np.mean(returns > 0))
     roi = float((np.mean(returns) + cost) / cost) if cost > 0 else 0.0
     mean_ret = float(np.mean(returns))
-    return {'sharpe': sharpe, 'cvar': cvar, 'winrate': winrate,
+    # Sortino ratio: mean / downside deviation
+    downside = returns[returns < 0]
+    if len(downside) == 0:
+        sortino = float('inf') if mean_ret > 0 else 0.0
+    else:
+        sortino = float(mean_ret / np.sqrt(np.mean(downside ** 2)))
+    return {'sharpe': sharpe, 'sortino': sortino, 'cvar': cvar, 'winrate': winrate,
             'roi': roi, 'mean_return': mean_ret, 'cost': cost,
             'producer_cost': cost, 'std_return': std}
 
@@ -1789,12 +1795,12 @@ else:
                 )
             with headline_cols[1]:
                 st.markdown(
-                    _render_metric_card("CVaR (5th pctl)", _fmt_dollar(joint_m['cvar'])),
+                    _render_metric_card("Sortino Ratio", f"{joint_m['sortino']:.3f}"),
                     unsafe_allow_html=True,
                 )
             with headline_cols[2]:
                 st.markdown(
-                    _render_metric_card("Win Rate", f"{joint_m['winrate']*100:.1f}%"),
+                    _render_metric_card("CVaR (5th pctl)", _fmt_dollar(joint_m['cvar'])),
                     unsafe_allow_html=True,
                 )
             with headline_cols[3]:
@@ -1804,8 +1810,7 @@ else:
                 )
             with headline_cols[4]:
                 st.markdown(
-                    _render_metric_card("Producer Premium/ac",
-                                        _fmt_dollar(joint_m['producer_cost'])),
+                    _render_metric_card("Win Rate", f"{joint_m['winrate']*100:.1f}%"),
                     unsafe_allow_html=True,
                 )
         else:
@@ -1833,12 +1838,12 @@ else:
                     )
                 with headline_cols[1]:
                     st.markdown(
-                        _render_metric_card("CVaR (5th pctl)", _fmt_dollar(port_metrics['cvar'])),
+                        _render_metric_card("Sortino Ratio", f"{port_metrics['sortino']:.3f}"),
                         unsafe_allow_html=True,
                     )
                 with headline_cols[2]:
                     st.markdown(
-                        _render_metric_card("Win Rate", f"{port_metrics['winrate']*100:.1f}%"),
+                        _render_metric_card("CVaR (5th pctl)", _fmt_dollar(port_metrics['cvar'])),
                         unsafe_allow_html=True,
                     )
                 with headline_cols[3]:
@@ -1848,8 +1853,7 @@ else:
                     )
                 with headline_cols[4]:
                     st.markdown(
-                        _render_metric_card("Producer Premium/ac",
-                                            _fmt_dollar(port_metrics['producer_cost'])),
+                        _render_metric_card("Win Rate", f"{port_metrics['winrate']*100:.1f}%"),
                         unsafe_allow_html=True,
                     )
 
@@ -1872,7 +1876,7 @@ else:
 
                 prem_total = 0.0
                 has_cat_units = False
-                for u in valid_units:
+                for prem_u_idx, u in enumerate(valid_units):
                     cfg = u['config']
                     use_idx_u = u.get(use_key, u.get('best_idx', 0))
                     unit_cost_per_ac = u['producer_costs'][use_idx_u]
@@ -1887,7 +1891,7 @@ else:
                     st.markdown(f"""
                     <div style="display:flex; justify-content:space-between; padding:4px 0;
                                 border-bottom:1px solid #eee; font-size:0.9em;">
-                        <span>{unit_desc}{cat_tag}</span>
+                        <span>U{prem_u_idx+1}: {unit_desc}{cat_tag}</span>
                         <span><strong>${unit_prem_total:,.0f}</strong>
                               <span style="color:#888;">({unit_cost_per_ac:,.2f}/ac)</span></span>
                     </div>""", unsafe_allow_html=True)
@@ -1919,7 +1923,7 @@ else:
                     </div>""", unsafe_allow_html=True)
 
                 cov_total = 0.0
-                for u in valid_units:
+                for cov_u_idx, u in enumerate(valid_units):
                     cfg = u['config']
                     ii = cfg.get('insurable_interest', 1.0)
                     # Compute dollar amount of protection
@@ -1948,7 +1952,7 @@ else:
                     st.markdown(f"""
                     <div style="display:flex; justify-content:space-between; padding:4px 0;
                                 border-bottom:1px solid #eee; font-size:0.9em;">
-                        <span>{unit_desc}{cat_tag}</span>
+                        <span>U{cov_u_idx+1}: {unit_desc}{cat_tag}</span>
                         <span><strong>${unit_coverage:,.0f}</strong>
                               <span style="color:#888;">({cov_per_ac:,.2f}/ac)</span></span>
                     </div>""", unsafe_allow_html=True)
@@ -1987,9 +1991,10 @@ else:
                 <div class="opt-comparison-box">
                     <div style="font-weight:700; margin-bottom:8px;">Independent Optimization</div>
                     <p>Sharpe: <strong>{indep_metrics['sharpe']:.3f}</strong></p>
+                    <p>Sortino: <strong>{indep_metrics['sortino']:.3f}</strong></p>
                     <p>CVaR: <strong>${indep_metrics['cvar']:,.2f}</strong></p>
+                    <p>Return %: <strong>{indep_metrics['roi']*100:.0f}%</strong></p>
                     <p>Win Rate: <strong>{indep_metrics['winrate']*100:.1f}%</strong></p>
-                    <p>Return: <strong>{indep_metrics['roi']*100:.0f}%</strong></p>
                 </div>""", unsafe_allow_html=True)
 
             with comp_col2:
@@ -1997,9 +2002,10 @@ else:
                 <div class="opt-comparison-box" style="border-color: {FC_GREEN};">
                     <div style="font-weight:700; color:{FC_GREEN}; margin-bottom:8px;">Joint Optimization</div>
                     <p>Sharpe: <strong>{joint_m['sharpe']:.3f}</strong> {_fmt_delta(joint_m['sharpe'] - indep_metrics['sharpe'], fmt='raw')}</p>
+                    <p>Sortino: <strong>{joint_m['sortino']:.3f}</strong> {_fmt_delta(joint_m['sortino'] - indep_metrics['sortino'], fmt='raw')}</p>
                     <p>CVaR: <strong>${joint_m['cvar']:,.2f}</strong> {_fmt_delta(joint_m['cvar'] - indep_metrics['cvar'], fmt='dollar', higher_is_better=True)}</p>
+                    <p>Return %: <strong>{joint_m['roi']*100:.0f}%</strong> {_fmt_delta(joint_m['roi'] - indep_metrics['roi'], fmt='pct')}</p>
                     <p>Win Rate: <strong>{joint_m['winrate']*100:.1f}%</strong> {_fmt_delta(joint_m['winrate'] - indep_metrics['winrate'], fmt='pct')}</p>
-                    <p>Return: <strong>{joint_m['roi']*100:.0f}%</strong> {_fmt_delta(joint_m['roi'] - indep_metrics['roi'], fmt='pct')}</p>
                 </div>""", unsafe_allow_html=True)
 
             # Insight text using generate_insight_text for AF-only portfolios
@@ -2049,12 +2055,6 @@ else:
                                 selected_names.append(lbl)
                                 selected_weights.append(f"{w*100:.0f}%")
 
-                    # Compute unit-level metrics
-                    unit_returns = ur['yearly_returns'][best]
-                    unit_cost = ur['producer_costs'][best]
-                    unit_roi = float((np.mean(unit_returns) + unit_cost) / unit_cost) if unit_cost > 0 else 0
-                    unit_winrate = float(np.mean(unit_returns > 0))
-
                     gs_label = ""
                     if cfg['type'] == 'AF' and cfg.get('growing_season'):
                         gs = cfg['growing_season']
@@ -2068,8 +2068,6 @@ else:
                         'Acres': f"{cfg['acres']:,.0f}",
                         'Selected Intervals': ', '.join(selected_names),
                         'Weights': ', '.join(selected_weights),
-                        'Unit Return %': f"{unit_roi*100:.0f}%",
-                        'Unit Win Rate': f"{unit_winrate*100:.1f}%",
                     })
 
             if alloc_rows:
@@ -2438,20 +2436,20 @@ else:
                     <div class="opt-comparison-box">
                         <div style="font-weight:700; margin-bottom:8px;">Stage 1 (Original)</div>
                         <p>Sharpe: <strong>{orig_m['sharpe']:.3f}</strong></p>
+                        <p>Sortino: <strong>{orig_m['sortino']:.3f}</strong></p>
                         <p>CVaR: <strong>${orig_m['cvar']:,.2f}</strong></p>
+                        <p>Return %: <strong>{orig_m['roi']*100:.0f}%</strong></p>
                         <p>Win Rate: <strong>{orig_m['winrate']*100:.1f}%</strong></p>
-                        <p>Return: <strong>{orig_m['mean_return']:+.2f}</strong> $/ac</p>
-                        <p>Premium: <strong>${orig_m.get('producer_cost', orig_m.get('cost', 0)):.2f}</strong>/ac</p>
                     </div>""", unsafe_allow_html=True)
                 with s2_mc2:
                     st.markdown(f"""
                     <div class="opt-comparison-box" style="border-color: {FC_GREEN};">
                         <div style="font-weight:700; color:{FC_GREEN}; margin-bottom:8px;">Stage 2 (Rebalanced)</div>
                         <p>Sharpe: <strong>{new_m['sharpe']:.3f}</strong> {_s2_delta(new_m['sharpe'], orig_m['sharpe'])}</p>
+                        <p>Sortino: <strong>{new_m['sortino']:.3f}</strong> {_s2_delta(new_m['sortino'], orig_m['sortino'])}</p>
                         <p>CVaR: <strong>${new_m['cvar']:,.2f}</strong> {_s2_delta(new_m['cvar'], orig_m['cvar'], fmt=".2f")}</p>
+                        <p>Return %: <strong>{new_m['roi']*100:.0f}%</strong> {_s2_delta(new_m['roi'], orig_m['roi'], pct=True)}</p>
                         <p>Win Rate: <strong>{new_m['winrate']*100:.1f}%</strong> {_s2_delta(new_m['winrate'], orig_m['winrate'], pct=True)}</p>
-                        <p>Return: <strong>{new_m['mean_return']:+.2f}</strong> $/ac {_s2_delta(new_m['mean_return'], orig_m['mean_return'], fmt=".2f")}</p>
-                        <p>Premium: <strong>${new_m.get('producer_cost', new_m.get('cost', 0)):.2f}</strong>/ac {_s2_delta(new_m.get('producer_cost', new_m.get('cost', 0)), orig_m.get('producer_cost', orig_m.get('cost', 0)), fmt=".2f")}</p>
                     </div>""", unsafe_allow_html=True)
 
                 # 3. Budget Info callout

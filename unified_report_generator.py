@@ -1216,7 +1216,7 @@ def generate_unified_optimizer_report_docx(
     # =========================================================================
     # SECTION 6b: HRP DENDROGRAM
     # =========================================================================
-    if stage2_results and stage2_results.get('hrp_enabled') and len(units_data) >= 3:
+    if report_stage == 2 and stage2_results and stage2_results.get('hrp_enabled') and len(units_data) >= 3:
         doc.add_paragraph()
         _add_heading_paragraph(doc, "HRP Clustering Dendrogram", Pt(14), bold=True,
                                color=_CLR_SLATE_BLUE, space_before=Pt(4))
